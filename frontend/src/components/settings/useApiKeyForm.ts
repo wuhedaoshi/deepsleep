@@ -3,7 +3,7 @@ import { ApiError, verifyApiKey } from '../../services/api/client.js'
 import { classifyApiError } from '../../services/api/errors.js'
 import { setApiKey } from '../../services/settings.js'
 import { useTranslate } from '../../i18n/index.js'
-import { logError, logInfo } from '../../services/log.js'
+import { logError, logInfo, logSettingsPresence } from '../../services/log.js'
 
 /** 输入 API Key 后先用 GET /models 校验，通过才保存 */
 export const useApiKeyForm = (onSaved?: () => void) => {
@@ -42,6 +42,7 @@ export const useApiKeyForm = (onSaved?: () => void) => {
       logInfo('settings', '校验通过，写入设置')
       setApiKey(apiKey)
       logInfo('settings', '设置已写入')
+      logSettingsPresence('写入后')
       setValue('')
       onSaved?.()
     } catch (e) {

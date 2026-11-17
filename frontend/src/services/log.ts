@@ -213,18 +213,53 @@ export const resetBootFailures = () => {
   }
 }
 /**
- * 记录一次布局几何。
+ * 命中测试：白屏时「屏幕上到底画了什么」。
  *
- * 「白屏」里最阴的一种是页面活着但渲染成 0 高度/全白——JS 一切正常，
- * 日志里看不出任何错误。把 viewport、#root 的尺寸与前景背景色都量一遍，
- * 下一份日志就能区分「没渲染」和「渲染了但看不见」。
+ * 取屏幕中轴三个点（上/中/下）做 elementFromPoint，把标签、class 与文本前若干字记下来。
+ * 如果三个点都落在同一层白色容器上，说明是覆盖层；如果落在 body 上，
+ * 说明该区域根本没渲染内容——两种原因完全不同。
  */
+export const logHitTest = (tag: string) => {
+  try {
+    const samples = [0.15, 0.5, 0.85].map((ratio) => {
+      const element = document.elementFromPoint(
+        Math.round(window.innerWidth / 2),
+        Math.round(window.innerHeight * ratio)
+      )
+      if (element === null) {
+        return 'null'
+      }
+      const className = typeof element.className === 'string' ? element.className : ''
+      const text = (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 24)
+      return `${element.tagName.toLowerCase()}.${className.split(' ')[0] || '-'}${text === '' ? '' : `「${text}」`}`
+    })
+    push('info', 'layout', `hittest ${tag}`, { points: samples })
+  } catch {
+    // 量不出来不影响主流程
+  }
+}
+
+/** 记录关键设置是否还在（只记有没有、长度，不记内容） */
+export const logSettingsPresence = (tag: string) => {
+  try {
+    // 设置是一项一个键（settings.ts 的 KEYS），不是单个 JSON
+    const raw = localStorage.getItem('deepsleep:api-key')
+    const key = raw ?? ''
+    push('info', 'settings', `${tag}: apiKey=${key.trim() === '' ? 'missing' : 'present'}`, {
+      len: key.length,
+      storageKeys: Object.keys(localStorage).length,
+    })
+  } catch (error) {
+    push('warn', 'settings', `${tag}: 读本地设置失败`, error)
+  }
+}
+/** 记录一次布局几何：区分「没渲染」与「有内容但看不见」 */
 export const logLayout = (tag: string) => {
   try {
     const rootElement = document.getElementById('root')
     const rect = rootElement?.getBoundingClientRect()
     const body = getComputedStyle(document.body)
-    push('info', 'layout', `${tag}`, {
+    push('info', 'layout', tag, {
       viewport: `${window.innerWidth}x${window.innerHeight}`,
       visual: `${window.visualViewport?.width ?? 0}x${window.visualViewport?.height ?? 0}`,
       doc: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
@@ -236,6 +271,6 @@ export const logLayout = (tag: string) => {
       dpr: window.devicePixelRatio,
     })
   } catch {
-    // 量不出来就算了，别把日志本身变成故障源
+    // 量不出来不影响主流程
   }
 }
