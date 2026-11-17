@@ -1,4 +1,5 @@
 import { formatDate } from '../../utils/format.js'
+import { logError, logInfo } from '../log.js'
 import * as db from './db.js'
 import type { ImportOptions, ImportProgress, ImportResult } from './history/importArchive.js'
 import { replaceHistory, replaceHistoryProgressively, useChatStore } from './store.js'
@@ -81,8 +82,24 @@ export const importHistory = (
   enqueueBackup(async () => {
     const { openHistoryArchive } = await import('./history/archive.js')
     const { importArchive } = await import('./history/importArchive.js')
-    const archive = await openHistoryArchive(file)
-    return replaceHistoryProgressively(() => importArchive(archive, options, onProgress))
+    // 时间线：先记「开始导入」与文件大小，再记结果；失败时带上错误摘要。
+    // 这三条就能还原绝大多数「导入到一半白屏/失败」的现场。
+    logInfo('import', `开始导入 ${(file.size / 1024 / 1024).toFixed(1)} MB，附件=${options.includeAttachments}`)
+    try {
+      const archive = await openHistoryArchive(file)
+      logInfo('import', `归档已打开：会话=${archive.refs.length}，附件=${archive.summary.attachments}`)
+      const result = await replaceHistoryProgressively(() =>
+        importArchive(archive, options, onProgress)
+      )
+      logInfo(
+        'import',
+        `导入完成：会话=${result.imported} 跳过=${result.skipped} 附件=${result.files}`
+      )
+      return result
+    } catch (error) {
+      logError('import', '导入失败', error)
+      throw error
+    }
   })
 
 /** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */

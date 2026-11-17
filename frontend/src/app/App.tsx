@@ -25,6 +25,7 @@ import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
 import { useEdgeSwipe } from '../components/sider/useEdgeSwipe.js'
+import { logWarn, markBootReady, previousBootCrashed } from '../services/log.js'
 import { MediaViewer } from '../components/media/MediaViewer.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import styles from './App.module.css'
@@ -74,10 +75,22 @@ export const App = () => {
   useEffect(closeMobileSider, [activeId, isMobile])
 
   useEffect(() => {
+    // 上次启动没走到就绪就没了（白屏/被系统杀掉）：记一条，用户下次打开能看到入口
+    const crashedAt = previousBootCrashed()
+    if (crashedAt !== null) {
+      logWarn('boot', `上次启动异常中断：${new Date(crashedAt).toISOString()}`)
+    }
     void initChat()
     // 首次打开先在设置里输入 API Key
     ensureApiKey()
   }, [])
+
+  // 首帧就绪即打点：之后若再崩溃，下次就知道「上次没走完」
+  useEffect(() => {
+    if (ready) {
+      markBootReady()
+    }
+  }, [ready])
 
   return (
     <>

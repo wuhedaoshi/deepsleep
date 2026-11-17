@@ -27,6 +27,7 @@ import android.provider.OpenableColumns;
 import android.provider.MediaStore;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileWriter;
 import android.util.Base64;
 import android.app.Activity;
 import android.content.Intent;
@@ -66,6 +67,55 @@ public class MainActivity extends Activity {
     private WebView web;
     /** 强引用 JS 桥对象：只被行内表达式引用的话，GC 之后桥就失效了（见 addJavascriptInterface 处的注释）。 */
     private Object nativeBridge;
+
+    // ---- 运行日志：前端把已脱敏的行交过来，这里顺序写到外部私有目录（用户能翻到） ----
+    private static final String LOG_FILE = "deepsleep.log";
+    /** 单文件上限；超了滚成 .1，只留一份历史，别把用户空间吃掉 */
+    private static final long LOG_MAX_BYTES = 2L * 1024 * 1024;
+    private final Object logLock = new Object();
+
+    private File logDir() {
+        File base = getExternalFilesDir("logs");
+        if (base == null) {
+            // 外部存储不可用时退回内部目录：用户翻不到，但日志不丢
+            base = new File(getFilesDir(), "logs");
+        }
+        if (!base.exists() && !base.mkdirs()) {
+            return null;
+        }
+        return base;
+    }
+
+    /** 追加一行；任何 IO 异常都吞掉——日志本身不该影响主流程 */
+    private void appendLogLine(String line) {
+        File dir = logDir();
+        if (dir == null || line == null) {
+            return;
+        }
+        synchronized (logLock) {
+            File file = new File(dir, LOG_FILE);
+            try {
+                if (file.length() > LOG_MAX_BYTES) {
+                    File rotated = new File(dir, LOG_FILE + ".1");
+                    if (rotated.exists()) {
+                        //noinspection ResultOfMethodCallIgnored
+                        rotated.delete();
+                    }
+                    //noinspection ResultOfMethodCallIgnored
+                    file.renameTo(rotated);
+                }
+                FileWriter writer = new FileWriter(file, true);
+                try {
+                    writer.write(line);
+                    writer.write('\n');
+                } finally {
+                    writer.close();
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "appendLog failed: " + error.getMessage());
+            }
+        }
+    }
 
     // ---- 归档保存：前端把导出的 ZIP 分块交过来，这里通过 SAF 打开的输出流顺序写盘 ----
     // 为什么需要它：WebView 里 `URL.createObjectURL(blob)` + `a.click()` 什么都不会发生
@@ -120,6 +170,7 @@ public class MainActivity extends Activity {
              */
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+        appendLogLine(new java.util.Date().toInstant().toString() + " ERROR [native] renderer 被杀（多半是内存不足），重建界面");
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                     return false;
                 }
@@ -307,6 +358,25 @@ public class MainActivity extends Activity {
                 if (archiveState != ARCHIVE_IDLE) {
                     settleArchiveSave("aborted");
                 }
+            }
+
+            /**
+             * 前端运行日志落盘：写到 Android/data/<包名>/files/logs/deepsleep.log。
+             *
+             * 为什么 logcat 不够：群里反馈问题的人不会 adb，能让他们用文件管理器翻到
+             * 这个目录把文件发过来才是最现实的路径；logcat 只保留最近几分钟。
+             * 只接收前端已经脱敏过的行（不含对话正文与 Key）。
+             */
+            @JavascriptInterface
+            public void appendLog(String line) {
+                appendLogLine(line);
+            }
+
+            /** 日志文件绝对路径，界面上展示给用户，方便自己去找 */
+            @JavascriptInterface
+            public String getLogPath() {
+                File dir = logDir();
+                return dir == null ? "" : new File(dir, LOG_FILE).getAbsolutePath();
             }
         };
         web.addJavascriptInterface(nativeBridge, "__deepsleepNative");
