@@ -212,3 +212,30 @@ export const resetBootFailures = () => {
     // 隐私模式下写不进去，不影响
   }
 }
+/**
+ * 记录一次布局几何。
+ *
+ * 「白屏」里最阴的一种是页面活着但渲染成 0 高度/全白——JS 一切正常，
+ * 日志里看不出任何错误。把 viewport、#root 的尺寸与前景背景色都量一遍，
+ * 下一份日志就能区分「没渲染」和「渲染了但看不见」。
+ */
+export const logLayout = (tag: string) => {
+  try {
+    const rootElement = document.getElementById('root')
+    const rect = rootElement?.getBoundingClientRect()
+    const body = getComputedStyle(document.body)
+    push('info', 'layout', `${tag}`, {
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      visual: `${window.visualViewport?.width ?? 0}x${window.visualViewport?.height ?? 0}`,
+      doc: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+      root: rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : 'none',
+      rootChildren: rootElement?.childElementCount ?? -1,
+      bodyText: (document.body.innerText ?? '').trim().length,
+      bg: body.backgroundColor,
+      color: body.color,
+      dpr: window.devicePixelRatio,
+    })
+  } catch {
+    // 量不出来就算了，别把日志本身变成故障源
+  }
+}

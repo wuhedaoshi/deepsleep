@@ -32,6 +32,7 @@ import java.io.FileWriter;
 import android.util.Base64;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
 
 import java.io.IOException;
@@ -146,6 +147,34 @@ public class MainActivity extends Activity {
     private OutputStream archiveOut;
     private Thread archiveWriter;
 
+    /**
+     * Activity 被反复重建时，日志里只有一堆 onCreate 看不出原因。
+     * 这里把暂停/停止/销毁与配置变化都记下来：如果每轮 onCreate 前都有 onDestroy，
+     * 那就是被销毁重建（多半是配置变化或系统回收）；如果是 onPause→onStop 之后没了，
+     * 那就是进程被杀。
+     */
+    @Override
+    protected void onPause() {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onStop");
+        super.onStop();
+    }
+
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " INFO [native] onConfigurationChanged ori=" + newConfig.orientation
+                + " uiMode=" + newConfig.uiMode
+                + " w=" + newConfig.screenWidthDp + " h=" + newConfig.screenHeightDp
+                + " density=" + newConfig.densityDpi);
+        super.onConfigurationChanged(newConfig);
+    }
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -523,6 +552,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        // 记录销毁原因：反复重建时，靠这条区分「配置变化/主动退出」与「系统回收」
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " INFO [native] onDestroy isFinishing=" + isFinishing());
         Uri partial = null;
         synchronized (archiveLock) {
             if (archiveState != ARCHIVE_IDLE) {
