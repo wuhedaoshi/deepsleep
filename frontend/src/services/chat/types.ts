@@ -105,23 +105,6 @@ export type AssistantMessage = MessageBranch & {
 
 export type Message = UserMessage | AssistantMessage
 
-/**
- * 压缩检查点：把较早的一段历史换成摘要，之后每次请求都带着它。
- *
- * 摘要原文与包装分开存：包装（前导 + `<compacted-summary>` 标签）只在组装请求时加，
- * 这样重新压缩、跨版本迁移都不会把标签套娃。
- */
-export type SessionCompaction = {
-  /** 模型返回的 checkpoint 原文；前导与 <compacted-summary> 标签只在组装请求时加。 */
-  summary: string
-  /** 被摘要的最后一轮回答 id，据此确定保留区的起点。 */
-  upToMessageId: string
-  /** 生成时间；也用来屏蔽压缩前那几轮的旧 usage。 */
-  createdAt: number
-  /** 估算释放的 token 数，仅供展示。 */
-  savedTokens: number
-}
-
 export type Session = {
   id: string
   title: string
@@ -133,8 +116,6 @@ export type Session = {
   rootMessageId?: string | null
   /** 置顶后排在会话列表最前，与更新时间无关。 */
   pinned?: boolean
-  /** 当前生效的压缩检查点；没有就是没压过 */
-  compaction?: SessionCompaction
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */

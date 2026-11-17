@@ -14,14 +14,6 @@ import {
   getDraft,
   prepareDraftMessage,
 } from './drafts.js'
-import { showToast } from '../../components/base/toastState.js'
-import {
-  compactSession,
-  CompactionError,
-  contextWindowFor,
-  isContextOverflowError,
-  needsCompaction,
-} from './compaction.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
   applyEvent,
@@ -81,8 +73,6 @@ type ChatState = {
   activeId: string | null
   /** 正在生成回复的会话 */
   streaming: Record<string, AbortController>
-  /** 正在做上下文压缩的会话（自动触发与手动 /compact 都登记在这里） */
-  compacting: Record<string, boolean>
 }
 
 export const useChatStore = create<ChatState>(() => ({
@@ -95,7 +85,6 @@ export const useChatStore = create<ChatState>(() => ({
   sessionSaveErrors: {},
   activeId: null,
   streaming: {},
-  compacting: {},
 }))
 
 const { getState: get, setState: set } = useChatStore
@@ -610,60 +599,6 @@ const removeSessionData = async (id: string): Promise<boolean> => {
 
 export const stopReply = (sessionId: string) => getStreamController(sessionId)?.abort()
 
-/** 手动压缩的结果：正常压完 / 没有可压区间 / 失败（无 Key、正忙、被取消等）。 */
-export type ManualCompactionOutcome = 'done' | 'nothing' | 'failed'
-
-/** 手动压缩指令：整条草稿只有这一段时按命令处理，不进对话、也不发请求。 */
-const TEXT_COMPACT_COMMAND = /^\/compact$/i
-
-/** 压缩不产生消息，只能靠提示条说明结果。 */
-const showCompactOutcome = (outcome: ManualCompactionOutcome) => {
-  showToast({ key: outcome === 'done' ? 'compactDone' : outcome === 'nothing' ? 'compactNothing' : 'compactFailed' })
-}
-
-/**
- * 手动压缩（对应 DSH 的 `/compact`）：跳过阈值判断，只要存在可压区间就压一次。
- *
- * 与自动压缩共用 `compactSession`，差别只有两点：不做 token 压力判定、不重试。
- * 自动压缩要等「上一轮 usage 逼近窗口」，手动则允许在还没满的时候先整理一段历史——
- * 长会话里提前压缩，比等到 800k 再被动触发更从容。
- */
-export const compactNow = async (sessionId: string): Promise<ManualCompactionOutcome> => {
-  if (get().importingHistory || getStreamController(sessionId) !== undefined) {
-    return 'failed'
-  }
-  if (get().compacting[sessionId] === true) {
-    return 'failed'
-  }
-  const session = getSession(sessionId)
-  if (session === undefined) {
-    return 'failed'
-  }
-  set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
-  try {
-    const result = await compactSession(session, useSettings.getState().apiKey ?? '')
-    updateSession(sessionId, (current) => ({
-      ...current,
-      compaction: {
-        summary: result.summary,
-        upToMessageId: result.upToMessageId,
-        createdAt: Date.now(),
-        savedTokens: result.savedTokens,
-      },
-    }))
-    persist(sessionId)
-    return 'done'
-  } catch (error) {
-    // 没有可压区间不是错误：历史本来就比保留预算短，说清楚即可。
-    if (error instanceof CompactionError && error.reason === 'empty-range') {
-      return 'nothing'
-    }
-    return 'failed'
-  } finally {
-    set((state) => ({ compacting: { ...state.compacting, [sessionId]: false } }))
-  }
-}
-
 /**
  * 提交指定会话的最新草稿；null 表示新建会话。
  * 同步接收成功才清空草稿，附件原件由会话接管；保存失败仍通过保存入口重试。
@@ -677,14 +612,6 @@ export const sendMessage = (targetSessionId: string | null) => {
     return false
   }
   const { text, files } = prepared
-  // `/compact`：本地指令，不进对话也不发请求。
-  if (TEXT_COMPACT_COMMAND.test(text) && targetSessionId !== null) {
-    clearSentDraft(targetSessionId)
-    void compactNow(targetSessionId).then((outcome) => {
-      showCompactOutcome(outcome)
-    })
-    return true
-  }
   const now = Date.now()
   let sessionId = targetSessionId
   if (
@@ -1187,8 +1114,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   streamFlushes.set(sessionId, flush)
 
-  // 溢出恢复只试一次：DSH 的 maxOverflowRetries 默认 1，反复压缩没意义。
-  let compactedForOverflow = false
   try {
     for (let attempt = 0; ; attempt += 1) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
@@ -1204,43 +1129,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
-        const apiKey = useSettings.getState().apiKey ?? ''
-        let compaction = getSession(sessionId)?.compaction
-        // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
-        // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
-        if (
-          needsCompaction(getContextRounds(prepared.history), compaction, contextWindowFor(MODEL))
-        ) {
-          const session = getSession(sessionId)
-          if (session !== undefined) {
-            set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
-            try {
-              const result = await compactSession(session, apiKey, controller.signal)
-              compaction = {
-                summary: result.summary,
-                upToMessageId: result.upToMessageId,
-                createdAt: Date.now(),
-                savedTokens: result.savedTokens,
-              }
-              updateSession(sessionId, (current) => ({ ...current, compaction }))
-              persist(sessionId)
-            } catch (error) {
-              // 摘要模型不可用或返回空：不压缩，照常发送。
-              if (controller.signal.aborted) {
-                throw error
-              }
-            } finally {
-              set((state) => ({ compacting: { ...state.compacting, [sessionId]: false } }))
-            }
-          }
-        }
         const messages = toRequestMessages(
           prepared.history,
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
-          latestReminder,
-          compaction
+          latestReminder
         )
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
@@ -1305,42 +1199,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             break
           }
           continue
-        }
-        // 上下文溢出：DSH 的做法是压缩后重试一次；仍失败就照常报错。
-        if (!compactedForOverflow && isContextOverflowError(error)) {
-          const session = getSession(sessionId)
-          if (session !== undefined) {
-            compactedForOverflow = true
-            set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
-            try {
-              const result = await compactSession(
-                session,
-                useSettings.getState().apiKey ?? '',
-                controller.signal,
-                { urgent: true }
-              )
-              updateSession(sessionId, (current) => ({
-                ...current,
-                compaction: {
-                  summary: result.summary,
-                  upToMessageId: result.upToMessageId,
-                  createdAt: Date.now(),
-                  savedTokens: result.savedTokens,
-                },
-              }))
-              persist(sessionId)
-              continue
-            } catch (compactError) {
-              // 压不下来：把原始溢出错误交给下面的分支上报，别用压缩错误覆盖它。
-              if (controller.signal.aborted) {
-                reply = settleReply(reply, 'stopped', Date.now())
-                break
-              }
-              void compactError
-            } finally {
-              set((state) => ({ compacting: { ...state.compacting, [sessionId]: false } }))
-            }
-          }
         }
         if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop

@@ -12,7 +12,6 @@ import type {
   Message,
   ReplyBlock,
   ReplyStatus,
-  SessionCompaction,
   UserMessage,
 } from './types.js'
 
@@ -301,37 +300,14 @@ export const getContextRounds = (history: Message[]): [UserMessage, AssistantMes
  * 把会话转成请求的 messages：只保留「提问 + 有回答的回复」成对的轮次，最后接上本轮提问。
  * 失败或没有回答的轮次不进上下文。续写时末尾再带上本轮 assistant。
  */
-/**
- * 自动 checkpoint 的包装：前导说明它是既定背景、不要复述也不要回应，然后才是摘要本体。
- * 摘要本身单独落盘（Session.compaction.summary），包装只在组装请求时加。
- */
-export const CHECKPOINT_PREAMBLE =
-  '这是一份自动生成的 checkpoint，用来把对话中较早的一段压缩成摘要以释放上下文。把它当作已经确定的背景，在此基础上继续，不要复述它。紧接着后面消息里的任务继续做，不要对这份 checkpoint 作任何回应。'
-
-export const COMPACTION_SUMMARY_OPEN_TAG = '<compacted-summary>'
-export const COMPACTION_SUMMARY_CLOSE_TAG = '</compacted-summary>'
-
-/** 摘要原文 → 进入请求的前缀消息内容。compaction 也用它算摘要占多少 token。 */
-export const frameCheckpoint = (summary: string): string =>
-  `${CHECKPOINT_PREAMBLE}\n\n${COMPACTION_SUMMARY_OPEN_TAG}\n${summary.trim()}\n${COMPACTION_SUMMARY_CLOSE_TAG}`
 export const toRequestMessages = (
   history: Message[],
   question: UserMessage,
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
-  latestReminder?: string,
-  compaction?: SessionCompaction
+  latestReminder?: string
 ): MessageParam[] => {
   const messages: MessageParam[] = []
-  const rounds = getContextRounds(history)
-  // 锚点不在当前分支上的检查点（切版本或分叉留下的）直接忽略：混进另一条分支的摘要更糟。
-  const summarizedAt =
-    compaction === undefined
-      ? -1
-      : rounds.findIndex(([, reply]) => reply.id === compaction.upToMessageId)
-  if (compaction !== undefined && summarizedAt >= 0) {
-    messages.push({ role: 'user', content: frameCheckpoint(compaction.summary) })
-  }
   let previousReminder: string | undefined
   const appendReminder = (reminder: string | undefined) => {
     // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
@@ -340,7 +316,7 @@ export const toRequestMessages = (
       previousReminder = reminder
     }
   }
-  for (const [user, reply] of summarizedAt >= 0 ? rounds.slice(summarizedAt + 1) : rounds) {
+  for (const [user, reply] of getContextRounds(history)) {
     // 历史提问没有文字、附件也都没有 serverId 时，提问为空，连同回答一起省略。
     if (!user.content && toFileBlocks(user.files).length === 0) {
       continue

@@ -86,10 +86,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       showToast(error)
     }
   }
-  // 原生侧的回调只注册一次（依赖空数组），但要用到最新的 acceptFiles：
-  // 用 ref 接住最新实现，既不会每次渲染重新注册，也满足 exhaustive-deps。
-  const acceptFilesRef = useRef(acceptFiles)
-  acceptFilesRef.current = acceptFiles
   const retryFile = useCallback(
     (id: string) => {
       if (!useChatStore.getState().importingHistory && ensureApiKey()) {
@@ -116,9 +112,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       for (let index = 0; index < binary.length; index += 1) {
         bytes[index] = binary.charCodeAt(index)
       }
-      acceptFilesRef.current([
-        new File([bytes], name || `photo-${Date.now()}.jpg`, { type: 'image/jpeg' }),
-      ])
+      acceptFiles([new File([bytes], name || `photo-${Date.now()}.jpg`, { type: 'image/jpeg' })])
     }
     const target = window as unknown as { __deepsleepPhoto?: typeof receive }
     target.__deepsleepPhoto = receive
