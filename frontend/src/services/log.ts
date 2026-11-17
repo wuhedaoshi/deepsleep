@@ -140,6 +140,7 @@ export const installLogHandlers = () => {
     })
   })
   window.addEventListener('unhandledrejection', (event) => {
+    // 同时打 console：WebChromeClient 会把 console 转进 logcat，adb 在场时能直接看
     const reason = event.reason
     push('error', 'promise', 'unhandled rejection', reason instanceof Error ? reason.message : reason)
   })
