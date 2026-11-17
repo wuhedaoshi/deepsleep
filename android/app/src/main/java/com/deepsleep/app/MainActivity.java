@@ -148,6 +148,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onCreate");
         startServer();
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
@@ -195,6 +196,21 @@ public class MainActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 return handleUrl(view, url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // 与 JS 的 [boot] 打点对照：能判断白屏是「页面没加载出来」还是「加载了但脚本挂了」
+                appendLogLine(new java.util.Date().toInstant().toString()
+                        + " INFO [native] onPageFinished " + url);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        WebResourceError error) {
+                appendLogLine(new java.util.Date().toInstant().toString()
+                        + " ERROR [native] onReceivedError " + error.getErrorCode()
+                        + " " + error.getDescription() + " " + request.getUrl());
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -386,6 +402,7 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);
         }
         web.loadUrl("http://127.0.0.1:" + PORT + "/index.html");
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] loadUrl " + PORT);
     }
 
     /**

@@ -153,11 +153,35 @@ export const installLogHandlers = () => {
   }
 }
 
-/** 启动哨兵：上一次启动没走到「就绪」就没了（白屏/被系统杀掉），下次打开能看出来。 */
+/**
+ * 启动哨兵：上一次启动没走到「就绪」就没了（白屏/被系统杀掉），下次打开能看出来。
+ *
+ * 注意顺序：**先读旧标记再写新标记**，否则读到的是本次刚写的那条，每次启动都误报。
+ * 另外要求旧标记至少 10 秒，避免把「同一秒内刷新页面」当成崩溃。
+ */
 const BOOT_KEY = 'deepsleep:boot-state'
+const BOOT_STALE_MS = 10_000
+/** 连续多少次启动异常就进恢复界面 */
+export const CRASH_LOOP_THRESHOLD = 2
+const FAIL_KEY = 'deepsleep:boot-failures'
+/** 上一次启动遗留的标记，由 `markBootStart` 在覆盖前捕获 */
+let previousBootAt: number | null = null
+/** 本次启动前已经连续异常过几次 */
+let bootFailures = 0
 
 export const markBootStart = () => {
   try {
+    const raw = localStorage.getItem(BOOT_KEY)
+    if (raw !== null && raw.startsWith('starting:')) {
+      const at = Number(raw.split(':')[1] ?? 0)
+      // 只认「够旧的」未完成标记：本次刷新造成的假崩溃不记
+      previousBootAt = Number.isFinite(at) && Date.now() - at > BOOT_STALE_MS ? at : null
+      bootFailures = previousBootAt === null ? 0 : Number(localStorage.getItem(FAIL_KEY) ?? '0') + 1
+    } else {
+      previousBootAt = null
+      bootFailures = 0
+    }
+    localStorage.setItem(FAIL_KEY, String(bootFailures))
     localStorage.setItem(BOOT_KEY, `starting:${Date.now()}`)
   } catch {
     // 隐私模式下写入失败，不影响使用
@@ -167,21 +191,23 @@ export const markBootStart = () => {
 export const markBootReady = () => {
   try {
     localStorage.setItem(BOOT_KEY, `ready:${Date.now()}`)
+    localStorage.setItem(FAIL_KEY, '0')
   } catch {
     // 同上
   }
 }
 
-/** 上次启动是否异常结束；返回上次的起始时间戳（没有或不异常返回 null） */
-export const previousBootCrashed = (): number | null => {
+/** 上次启动是否异常结束（由 `markBootStart` 在覆盖前捕获）；没有则返回 null */
+export const previousBootCrashed = (): number | null => previousBootAt
+/** 本次启动前已连续异常的次数（在 `markBootStart` 里累加） */
+export const bootFailureCount = (): number => bootFailures
+
+/** 恢复正常启动：把计数清零，下次不再进恢复界面 */
+export const resetBootFailures = () => {
+  bootFailures = 0
   try {
-    const value = localStorage.getItem(BOOT_KEY)
-    if (value === null || value.startsWith('ready:')) {
-      return null
-    }
-    const at = Number(value.split(':')[1] ?? 0)
-    return Number.isFinite(at) && at > 0 ? at : null
+    localStorage.setItem(FAIL_KEY, '0')
   } catch {
-    return null
+    // 隐私模式下写不进去，不影响
   }
 }
