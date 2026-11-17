@@ -1,5 +1,21 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.11（运行日志 + 白屏修复）
+
+### 运行日志（便于排查）
+
+- **只记事件与计数**：启动、导入进度、请求状态码、错误摘要、渲染进程被杀；**不含对话正文、图片内容、API Key**
+- 写盘前脱敏：`sk-…`、`Bearer …`、长 base64、`/data/user/0/…` 与 `C:\Users\<name>` 一律替换
+- 三种看法：设置 → 数据管理 →「运行日志」（查看/刷新/复制/导出）；文件 `Android/data/com.deepsleep.app/files/logs/deepsleep.log`；面板里的「导出」走系统保存对话框
+- 体积有上限：单文件 2 MB 封顶，超过滚成 `.1`（旧的一份直接删），磁盘占用最多约 4 MB；实测一次十分钟的正常操作约 6.6 KB
+- 兜底：渲染期异常由错误边界接管（显示摘要 + 复制），不再留一片白；连续两次启动没走完会进恢复界面（不加载历史，可导出日志 / 清空会话 / 再试一次）
+
+### 白屏修复
+
+- 移动端框架高度补 `100vh` 兜底：老 WebView 不认 `dvh` 时 `height` 会退化成 `auto`，`position: fixed` 的框架塌成 0 高度
+- 去掉全部常驻 `will-change: transform`：整页合成层在 `onStop → onResume` 后可能不重绘，DOM 正常但屏幕全白
+- 原生：显式 `LAYER_TYPE_HARDWARE`；`onPause/onResume` 驱动 WebView；从后台回来重新挂载一次视图，逼它重建 surface
+- 整屏 `backdrop-filter` 移除（Mali GPU 上同样有整层渲染成白的风险）
 ## 1.2.10（修：历史里有 webp 时长会话发不出去）
 
 从 1.3.x 回移。群里有反馈：长对话报 `messages.40.content.0: You have uploaded an unsupported image`，短对话没事。
