@@ -24,5 +24,4 @@
   border-radius: 1px;
   background-color: var(--dsw-alias-button-info-hover, #679efe);
   transform-origin: center;
-  will-change: transform;
 }

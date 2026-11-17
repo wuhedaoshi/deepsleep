@@ -32,6 +32,7 @@ import java.io.FileWriter;
 import android.util.Base64;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
 
 import java.io.IOException;
@@ -74,6 +75,8 @@ public class MainActivity extends Activity {
     /** 单文件上限；超了滚成 .1，只留一份历史，别把用户空间吃掉 */
     private static final long LOG_MAX_BYTES = 2L * 1024 * 1024;
     private final Object logLock = new Object();
+    /** 是否至少进过后台：只有从后台回来才做重新挂载，避免每次 resume 闪一下 */
+    private boolean stoppedOnce = false;
 
     private File logDir() {
         File base = getExternalFilesDir("logs");
@@ -519,6 +522,60 @@ public class MainActivity extends Activity {
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /**
+     * 生命周期留痕 + 回前台时重新挂载 WebView。
+     * 为什么需要重新挂载：Honor/MagicOS 上从后台回来，WebView 的绘制缓冲会丢，
+     * DOM 和布局都正常（日志里 bodyText 有内容）但屏幕整片白，重新 attach 才会重画。
+     */
+    @Override
+    protected void onPause() {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onStop");
+        stoppedOnce = true;
+        super.onStop();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onResume");
+        if (web == null) {
+            return;
+        }
+        web.resumeTimers();
+        web.invalidate();
+        if (!stoppedOnce) {
+            return;
+        }
+        stoppedOnce = false;
+        web.setVisibility(View.INVISIBLE);
+        web.post(new Runnable() {
+            @Override
+            public void run() {
+                if (web != null) {
+                    web.setVisibility(View.VISIBLE);
+                    web.invalidate();
+                }
+                appendLogLine(new java.util.Date().toInstant().toString()
+                        + " INFO [native] 回前台重新挂载 WebView");
+            }
+        });
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " INFO [native] onConfigurationChanged ori=" + newConfig.orientation
+                + " uiMode=" + newConfig.uiMode + " w=" + newConfig.screenWidthDp
+                + " h=" + newConfig.screenHeightDp + " density=" + newConfig.densityDpi);
+        super.onConfigurationChanged(newConfig);
     }
 
     @Override
