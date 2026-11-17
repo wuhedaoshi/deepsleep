@@ -28,3 +28,5 @@ if (shouldShowRecovery()) {
     </ErrorBoundary>
   )
 }
+// 通知 index.html 里的内联兜底：前端确实起来了，别弹「界面没加载出来」
+;(window as unknown as { __deepsleepBootOk?: () => void }).__deepsleepBootOk?.()

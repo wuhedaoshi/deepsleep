@@ -13,6 +13,58 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      内联兜底：不依赖打包产物，所以 bundle 语法错、模块加载失败、脚本被拦时它照样能跑。
+      8 秒还没挂载就在页面上直接说话，并把一行日志写进原生文件——把「白屏」变成可读的输出。
+    -->
+    <script>
+      (function () {
+        function report(reason) {
+          var root = document.getElementById('root')
+          if (!root || root.childElementCount > 0) {
+            return
+          }
+          root.innerHTML =
+            '<div style="padding:28px 18px;font:14px/1.7 -apple-system,system-ui,sans-serif;color:#111">' +
+            '<h1 style="font-size:18px;margin:0 0 10px">界面没加载出来</h1>' +
+            '<p style="margin:0 0 10px;color:#555">脚本没有正常启动（' +
+            reason +
+            '）。这不是白屏卡死，而是前端 bundle 没跑起来。</p>' +
+            '<p style="margin:0 0 10px;color:#555">日志文件：<code>Android/data/com.deepsleep.app/files/logs/deepsleep.log</code></p>' +
+            '<button id="reload" style="padding:9px 16px;border-radius:999px;border:1px solid #ccc;background:#f5f5f5;font-size:14px">重新加载</button>' +
+            '</div>'
+          var button = document.getElementById('reload')
+          if (button) {
+            button.onclick = function () {
+              location.reload()
+            }
+          }
+          try {
+            var bridge = window.__deepsleepNative
+            if (bridge && bridge.appendLog) {
+              bridge.appendLog(
+                new Date().toISOString() + ' ERROR [boot] 前端未挂载：' + reason
+              )
+            }
+          } catch (error) {
+            /* 桥不可用就算了，页面上已经给了说明 */
+          }
+        }
+
+        window.__deepsleepBootOk = function () {
+          window.__deepsleepBooted = true
+        }
+        window.setTimeout(function () {
+          if (!window.__deepsleepBooted) {
+            report('8 秒内没有挂载')
+          }
+        }, 8000)
+        window.addEventListener('error', function (event) {
+          if (!window.__deepsleepBooted && event && event.message) {
+            report(event.message.slice(0, 120))
+          }
+        })
+      })()
+    </script>
   </body>
 </html>
-
