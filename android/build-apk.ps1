@@ -55,13 +55,8 @@ $parts = $name.Split('.')
 if ($parts.Count -lt 3) { throw "versionName 需要三段式 x.y.z，实际：$name" }
 $major = [int]$parts[0]
 $minor = [int]$parts[1]
-$patch = [int]$parts[2]
-$patch += 1
-if ($patch -ge 10) {
-    $patch = 0
-    $minor += 1
-    if ($minor -ge 10) { $minor = 0; $major += 1 }
-}
+$patch = [int]$parts[2] + 1
+# 补丁位直接 +1，不再「满 9 进一」：那套规则会把 1.2.9 滚成 1.3.0，两条分支的版本名就撞了。
 $newName = "$major.$minor.$patch"
 $newCode = $code + 1
 
