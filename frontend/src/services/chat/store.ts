@@ -22,6 +22,7 @@ import {
   isContextOverflowError,
   needsCompaction,
 } from './compaction.js'
+import { isRiskyImageType } from '../images.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
   applyEvent,
@@ -1110,11 +1111,20 @@ const collectServerFileIds = (request: Request): Set<string> => {
  * 下一次补齐会重新读取本地原件上传。报错里点名了 file_id 就只重置这些，
  * 没点名（如 invalid file_id）则重置本次请求用到的全部附件。
  */
+/**
+ * 服务端明确说「这张图不认」（只认 jpeg/png，历史里可能已经躺着 webp）：
+ * 把可疑格式的图片 serverId 清掉再重试，让它们从上下文里退化成「只有文件名」，
+ * 而不是让整个会话永远发不出去。
+ */
+const isUnsupportedImageError = (error: unknown): boolean =>
+  error instanceof ApiError && getFileErrorCode(error) === 'unsupportedImage'
+
 const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: unknown): boolean => {
-  if (!(error instanceof ApiError) || !getFileErrorCode(error)) {
+  const unsupportedImage = isUnsupportedImageError(error)
+  if (!(error instanceof ApiError) || (!unsupportedImage && !getFileErrorCode(error))) {
     return false
   }
-  const mentioned = extractFileIds(error.message)
+  const mentioned = unsupportedImage ? [] : extractFileIds(error.message)
   // 重试时原始快照里还是上一轮已被清掉的 serverId，先换成会话里的最新消息
   const targets =
     mentioned.length > 0
@@ -1134,12 +1144,41 @@ const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: un
       if (!file.serverId || !targets.has(file.serverId)) {
         return file
       }
+      // 只有格式可疑的图片才值得为「图片不支持」这条错误清 id；jpeg/png 留着
+      if (unsupportedImage && !(file.isImage && isRiskyImageType(file.mimeType))) {
+        return file
+      }
       localIds.push(file.id)
       changed = true
       return { ...file, serverId: null }
     })
     return changed ? { ...message, files } : message
   })
+  if (localIds.length === 0 && unsupportedImage) {
+    // 没有格式可疑的图片（例如 MIME 缺失、判断不出来）：退一步把所有图片都摘掉，
+    // 至少让这个会话能继续用。图片只丢上下文，本地原件还在，界面上照常显示。
+    const all = session.messages.map((message) =>
+      message.role === 'user'
+        ? {
+            ...message,
+            files: message.files.map((file) => {
+              if (!(file.isImage && file.serverId)) {
+                return file
+              }
+              localIds.push(file.id)
+              return { ...file, serverId: null }
+            }),
+          }
+        : message
+    )
+    if (localIds.length === 0) {
+      return false
+    }
+    updateSession(sessionId, (current) => ({ ...current, messages: all }))
+    localIds.forEach(cancelUpload)
+    persist(sessionId)
+    return true
+  }
   if (localIds.length === 0) {
     return false
   }
@@ -1350,7 +1389,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             kind: error.kind,
             message: error.message,
             status: error.status,
-            localMessage: error.localMessage,
+            // 图片格式不支持这类错误，给中文说明；其余沿用服务端原文
+            localMessage:
+              getFileErrorCode(error) === 'unsupportedImage'
+                ? { key: 'apiImageUnsupported' }
+                : error.localMessage,
           })
         } else {
           reply = settleReply(reply, 'error', Date.now(), {

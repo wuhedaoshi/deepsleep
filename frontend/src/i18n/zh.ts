@@ -54,6 +54,7 @@ export const zh = {
   compactDone: '已压缩上下文',
   compactNothing: '没有可压缩的历史（保留区还没被撑满）',
   compactFailed: '压缩失败，请稍后重试',
+  apiImageUnsupported: '这张图片的格式服务端不支持（只认 JPEG/PNG），已把它从上下文里摘掉；本地原图仍在，可以正常继续对话。重新发一次会自动转成 JPEG。',
   contextCompacting: '压缩中…',
   contextUsageCompacted: '上下文已压缩（较早的历史已摘要为 checkpoint）',
   contextUsageTooltip: '当前对话已占用的上下文，上限 1M tokens（deepseek-flash）。超出后最早的对话会被截断。',

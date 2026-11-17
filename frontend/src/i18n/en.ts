@@ -58,6 +58,7 @@ export const en = {
   compactDone: 'Context compacted',
   compactNothing: 'Nothing to compact yet (history is still within the retained span)',
   compactFailed: 'Compaction failed, try again later',
+  apiImageUnsupported: 'The server does not accept this image format (JPEG/PNG only). The image was dropped from the context; the local file is kept and the chat continues. New uploads are converted to JPEG automatically.',
   contextCompacting: 'Compacting…',
   contextUsageCompacted: 'Context compacted (earlier history summarized into a checkpoint)',
   contextUsageTooltip: 'Context used by this conversation, up to 1M tokens (deepseek-flash). Older turns get dropped past the limit.',
