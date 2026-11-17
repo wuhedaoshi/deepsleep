@@ -156,6 +156,8 @@ public class MainActivity extends Activity {
         startServer();
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
+        // 明确用硬件层：少数机型会把 WebView 判成软件层，切后台回来不再重绘
+        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -532,6 +534,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        if (web != null) {
+            // 让 WebView 自己也暂停：部分 OEM WebView（Honor/MagicOS 实测）只靠 Activity
+            // 的生命周期不会停合成器，回来之后 surface 是空的，看起来就是整片白。
+            web.onPause();
+        }
         super.onPause();
     }
 
@@ -549,6 +556,7 @@ public class MainActivity extends Activity {
         if (web == null) {
             return;
         }
+        web.onResume();
         web.resumeTimers();
         web.invalidate();
         if (!stoppedOnce) {
