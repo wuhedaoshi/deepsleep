@@ -15,6 +15,7 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { isRiskyImageType } from '../images.js'
+import { logError, logInfo } from '../log.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
   applyEvent,
@@ -1168,6 +1169,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
+        logInfo('chat', '发起请求', { model: MODEL, rounds: getContextRounds(prepared.history).length })
         const messages = toRequestMessages(
           prepared.history,
           prepared.question,
@@ -1243,6 +1245,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
           reply = settleReply(reply, 'done', Date.now())
         } else if (error instanceof ApiError) {
+          logError('chat', '请求失败', { kind: error.kind, status: error.status, message: error.message })
           reply = settleReply(reply, 'error', Date.now(), {
             kind: error.kind,
             message: error.message,
