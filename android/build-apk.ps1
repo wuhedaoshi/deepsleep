@@ -30,6 +30,12 @@ $wrapperBat = Join-Path $PSScriptRoot 'gradlew.bat'
 $gradle = if ($env:DEEPSLEEP_GRADLE) { $env:DEEPSLEEP_GRADLE } elseif (Test-Path $wrapperBat) { $wrapperBat } else { Join-Path $toolchain 'gradle-8.7\bin\gradle.bat' }
 $keystore = if ($env:DEEPSLEEP_KEYSTORE) { $env:DEEPSLEEP_KEYSTORE } else { Join-Path $PSScriptRoot '..\keystore\deepsleep.keystore' }
 
+# dist 是跨分支共享的：切分支后必须先在 frontend 里 pnpm build，否则会把上一份产物打进包里。
+$distMain = Get-ChildItem (Join-Path $dist 'static\js') -Filter 'main.*.js' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($distMain) {
+    Write-Host ("[dist] {0}  产出于 {1}" -f $distMain.Name, $distMain.LastWriteTime.ToString('MM-dd HH:mm'))
+}
+
 $missing = @()
 foreach ($path in @($jdk, $sdk, $gradle, $dist, $keystore)) {
     if (-not (Test-Path $path)) { $missing += $path }
