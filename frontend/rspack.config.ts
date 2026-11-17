@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@rspack/cli'
 import { rspack, type Configuration } from '@rspack/core'
 
-const dev = process.env.NODE_ENV !== 'production'
+// 只有显式声明 development 才算 dev：直接跑 rspack build（不设环境变量）必须是生产构建。
+const dev = process.env.NODE_ENV === 'development'
 const targets = ['chrome >= 80', 'edge >= 80', 'safari >= 14', 'firefox >= 78']
 const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(

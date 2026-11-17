@@ -1,0 +1,39 @@
+name: Bug 报告
+description: 装了这个 APK 之后哪里不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先确认：用的是 [Releases](https://github.com/wuhedaoshi/deepsleep/releases) 里的最新包？
+        导入导出类问题，能附上归档结构（`unzip -l` 的输出，注意脱敏）会快很多。
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 期望发生什么、实际发生了什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 从「下载」选一个 300 MB 的归档
+        2. 勾上「同时导入图片附件」
+        3. 进度到 60% 时……
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: 机型 / Android 版本 / WebView 版本 / Deepsleep 版本（设置里或安装包名）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（可选）
+      description: '`adb logcat -s deepsleep` 的输出。APK 里没有 devtools，日志是主要线索。'
+      render: shell

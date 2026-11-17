@@ -85,7 +85,9 @@ export const useEdgeSwipe = (enabled: boolean) => {
       }
       const clear = () => {
         for (const el of [drawer, main]) {
-          if (!el) continue
+          if (!el) {
+            continue
+          }
           el.style.transition = ''
           el.style.transform = ''
         }

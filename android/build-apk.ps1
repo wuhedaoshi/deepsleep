@@ -25,7 +25,9 @@ $releaseDir = Join-Path $PSScriptRoot '..\release'
 
 $jdk = if ($env:DEEPSLEEP_JDK) { $env:DEEPSLEEP_JDK } else { Join-Path $toolchain 'jdk-17' }
 $sdk = if ($env:DEEPSLEEP_SDK) { $env:DEEPSLEEP_SDK } else { Join-Path $toolchain 'android-sdk' }
-$gradle = if ($env:DEEPSLEEP_GRADLE) { $env:DEEPSLEEP_GRADLE } else { Join-Path $toolchain 'gradle-8.7\bin\gradle.bat' }
+# 优先用仓库自带的 wrapper（版本与 CI 一致），没有再退回环境变量 / 工具链目录
+$wrapperBat = Join-Path $PSScriptRoot 'gradlew.bat'
+$gradle = if ($env:DEEPSLEEP_GRADLE) { $env:DEEPSLEEP_GRADLE } elseif (Test-Path $wrapperBat) { $wrapperBat } else { Join-Path $toolchain 'gradle-8.7\bin\gradle.bat' }
 $keystore = if ($env:DEEPSLEEP_KEYSTORE) { $env:DEEPSLEEP_KEYSTORE } else { Join-Path $PSScriptRoot '..\keystore\deepsleep.keystore' }
 
 $missing = @()

@@ -23,7 +23,14 @@ done
 export JAVA_HOME="${DEEPSLEEP_JDK:-${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}}"
 export ANDROID_HOME="${DEEPSLEEP_SDK:-${ANDROID_HOME:-$HOME/android-sdk}}"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
-GRADLE="${DEEPSLEEP_GRADLE:-$HOME/gradle-8.7/bin/gradle}"
+# 优先用仓库自带的 wrapper（版本与 CI 一致），没有再退回环境变量 / 系统安装
+if [ -n "${DEEPSLEEP_GRADLE:-}" ]; then
+  GRADLE="$DEEPSLEEP_GRADLE"
+elif [ -x ./gradlew ]; then
+  GRADLE=./gradlew
+else
+  GRADLE="$HOME/gradle-8.7/bin/gradle"
+fi
 APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
 AAPT2="$ANDROID_HOME/build-tools/34.0.0/aapt2"
 DIST="$(cd "$(dirname "$0")/.." && pwd)/frontend/dist"
