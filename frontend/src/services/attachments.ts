@@ -4,6 +4,7 @@ import { uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
+import { toSupportedImage } from './images.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
 export const ACCEPTED_EXTS = ACCEPT_FILE_EXTS
@@ -131,8 +132,16 @@ const enqueueUpload = (
         return
       }
       try {
-        const body = file instanceof File ? file : new File([file], name, { type: file.type })
-        resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage), signal)).id)
+        let body = file instanceof File ? file : new File([file], name, { type: file.type })
+        let uploadName = name
+        if (isImage) {
+          // 服务端只认 jpeg/png：webp/bmp/gif 这些在这里先转掉，否则会带着一个
+          // 服务端不认的 file_id 进历史，之后每次发送都报 "unsupported image"。
+          const normalized = await toSupportedImage(body, name)
+          body = new File([normalized.blob], normalized.name, { type: normalized.blob.type })
+          uploadName = normalized.name
+        }
+        resolve((await uploadFile(apiKey, body, getUploadPurpose(uploadName, isImage), signal)).id)
       } catch (error) {
         reject(error)
       }
