@@ -6,6 +6,15 @@
 
 - 无
 
+## 1.3.9（修：点开图片黑屏、返回键退回新对话）
+
+> 正式线（1.2.8）与实验线共用这段代码，**两个版本都有这个问题**；本版按当前线修，1.2.x 若要继续维护需要同样回移。
+
+- **根因**：消息里的图片是一个 `<a href="blob:…" target="_blank">`。WebView 里 `target=_blank` 要开新窗口，而 `MainActivity.onCreateWindow` 只处理 `http(s)`（交给 `BrowserActivity`），blob 地址落到 `return false` —— 新窗口照样被创建，但没有内容也没有地址可加载，于是黑屏；再按返回键，WebView 的历史被弹掉，SPA 重新加载，`activeId` 归零，看起来就是「回到新对话」。
+- **修法（前端）**：不再用链接，改成应用内浮层 `MediaViewer`——图片走 `<img>`、其他类型（PDF/文本）走 `<iframe>`，点遮罩、点 ✕、按返回键（Esc 同一条）都能关。返回键用「打开时 `history.pushState`、关闭时 `history.back()`」实现，所以关浮层时页面本身不动，会话还在。
+- **修法（原生）**：`onCreateWindow` 里把非 `http(s)` 的地址改为**静默丢弃**（不再 `return false` 让 WebView 建出空白窗口），并在 logcat 留一行 `onCreateWindow dropped:`。这是兜底：即使以后某处又写了 `target=_blank`，也不会再黑屏。
+- **顺带**：普通文件（非图片）原来也是 `window.open`，现在同样进浮层预览；`android/gradle.properties` 加 `android.overridePathCheck=true`，工程放在中文目录里也能构建（本机一直是靠 ASCII 联接目录绕过的）。
+- **验证**：`frontend/tools/viewer-check.mjs` 在真实浏览器（Edge）里跑完整链路——导入一个小归档 → 打开会话 → 点缩略图，断言六条全过：缩略图加载（2048×1536）、出现浮层、浮层里是真图片（`naturalWidth>0`）、**没有调用 `window.open`**、Esc 能关、关闭后仍在会话里。配合 `tools/pick-image-session.mjs` 从大归档里挑一条「第一条消息就带图」的短会话做成小包。
 ## 1.3.8（实验版 · 1.2.8 线 + 自动/手动上下文压缩）
 
 > 基线是 **1.2.8**，不是 1.3.7。两条线各走各的：1.3.7 是 1.3.6 树加导入导出重做，1.3.8 是 1.2.8 加压缩。

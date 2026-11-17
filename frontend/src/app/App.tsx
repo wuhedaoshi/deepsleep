@@ -25,6 +25,7 @@ import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
 import { useEdgeSwipe } from '../components/sider/useEdgeSwipe.js'
+import { MediaViewer } from '../components/media/MediaViewer.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import styles from './App.module.css'
 
@@ -138,6 +139,7 @@ export const App = () => {
         <SearchPanel />
       </div>
       <SettingsDialog />
+      <MediaViewer />
       <Toast />
     </>
   )

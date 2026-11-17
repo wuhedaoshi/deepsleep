@@ -1,0 +1,60 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.92);
+  /* 深色浮层上不跟随系统主题，避免浅色主题下文字看不清 */
+  color: #f4f4f5;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 10px 12px;
+  /* 避开状态栏与刘海 */
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.close {
+  flex: none;
+  color: #f4f4f5;
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px calc(8px + env(safe-area-inset-bottom, 0px));
+}
+
+.stage img,
+.stage iframe {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  border: 0;
+  /* 图片按比例缩放到容器内，不裁切 */
+  object-fit: contain;
+}
+
+.stage iframe {
+  width: 100%;
+  height: 100%;
+  background: #fff;
+}

@@ -191,13 +191,17 @@ public class MainActivity extends Activity {
                 // 回来时又没有返回栈。这里直接在当前 WebView 打开，返回键可以退回对话。
                 WebView.HitTestResult result = view.getHitTestResult();
                 String data = result == null ? null : result.getExtra();
-                if (data != null && data.startsWith("http")) {
+                if (data != null && (data.startsWith("http://") || data.startsWith("https://"))) {
                     Intent intent = new Intent(MainActivity.this, BrowserActivity.class);
                     intent.putExtra("url", data);
                     startActivity(intent);
                     return true;
                 }
-                return false;
+                // blob: / data: 这类地址只在本进程的渲染器里有效，交给新窗口也打不开——之前
+                // 返回 false 会让 WebView 建出一个空白窗口（黑屏），返回键再把页面历史弹掉，
+                // 用户就回到「新对话」了。这里不提供窗口（不调用 sendToTarget），静默丢弃。
+                Log.i(TAG, "onCreateWindow dropped: " + data);
+                return true;
             }
 
             @Override

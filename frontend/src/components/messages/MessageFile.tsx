@@ -7,6 +7,7 @@ import type { FileAttachment } from '../../services/chat/types.js'
 import { IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { FileCard } from '../files/FileCard.js'
+import { openMediaViewer } from '../media/mediaViewerState.js'
 import styles from './MessageFile.module.css'
 
 /** 原件从 IndexedDB 读出并生成本地地址；undefined 表示加载中，null 表示原件缺失。 */
@@ -134,17 +135,18 @@ export const MessageFile = ({
       )
     }
 
-    // 正常态：链接到原件
+    // 正常态：点开应用内预览。原来这里是 `<a target="_blank">`，WebView 会开一个
+    // 空窗口（blob 地址传不过去）→ 黑屏，返回键还把 SPA 的历史弹掉、回到新对话。
     return url ? (
-      <a
+      <button
+        type="button"
         className={clsx(styles.image, styles.imageThumb)}
-        href={url}
-        target="_blank"
-        rel="noreferrer"
         title={file.name}
+        aria-label={file.name}
+        onClick={() => openMediaViewer({ url, name: file.name, kind: 'image' })}
       >
         {preview}
-      </a>
+      </button>
     ) : (
       // 原件还没加载出来（极短暂）
       <div className={styles.image} />
@@ -158,7 +160,11 @@ export const MessageFile = ({
       status={uploading ? 'uploading' : failed ? 'error' : 'done'}
       error={errorText}
       onRetry={retry ?? undefined}
-      onOpen={url && !upload ? () => window.open(url, '_blank', 'noreferrer') : undefined}
+      onOpen={
+        url && !upload
+          ? () => openMediaViewer({ url, name: file.name, kind: 'other' })
+          : undefined
+      }
     />
   )
 }
