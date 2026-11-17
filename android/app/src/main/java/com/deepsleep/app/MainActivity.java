@@ -17,6 +17,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.os.Message;
 import android.webkit.JavascriptInterface;
