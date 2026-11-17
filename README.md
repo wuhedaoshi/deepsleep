@@ -1,5 +1,6 @@
 # Deepsleep
 
+[![CI](https://github.com/wuhedaoshi/deepsleep/actions/workflows/ci.yml/badge.svg)](https://github.com/wuhedaoshi/deepsleep/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 一个跑在 Android WebView 里的 DeepSeek 聊天客户端。前端基于官方
