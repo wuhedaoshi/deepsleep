@@ -50,15 +50,8 @@ IFS='.' read -r MAJOR MINOR PATCH <<< "$NAME"
 PATCH=${PATCH:-0}
 MINOR=${MINOR:-0}
 MAJOR=${MAJOR:-1}
+# 补丁位直接 +1（不再满 9 进一：那会把 1.2.9 滚成 1.3.0）
 PATCH=$((PATCH + 1))
-if [ "$PATCH" -ge 10 ]; then
-  PATCH=0
-  MINOR=$((MINOR + 1))
-  if [ "$MINOR" -ge 10 ]; then
-    MINOR=0
-    MAJOR=$((MAJOR + 1))
-  fi
-fi
 NEWNAME="${MAJOR}.${MINOR}.${PATCH}"
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "[dry-run] 版本：$NAME → $NEWNAME (versionCode $CODE → $NEW)，写入 $PROPS"

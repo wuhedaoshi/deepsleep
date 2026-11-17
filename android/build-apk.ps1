@@ -42,7 +42,9 @@ if ($missing.Count -gt 0) {
     }
 }
 
-# 1) 版本号 +1：versionCode +1；versionName 补丁位 +1，满 9 进一位（1.0.9 → 1.1.0，1.9.9 → 2.0.0）
+# 1) 版本号 +1：versionCode +1；versionName 补丁位 +1。
+#    这里**不做「满 9 进一」**——那套规则会把 1.2.9 滚成 1.3.0，两条分支的版本名就撞了。
+#    versionName 只给人看，补丁位涨到两位数（1.2.10）完全正常。
 $props = 'version.properties'
 $lines = Get-Content -LiteralPath $props
 $codeLine = $lines | Where-Object { $_ -match '^versionCode=' } | Select-Object -First 1
@@ -55,13 +57,7 @@ $parts = $name.Split('.')
 if ($parts.Count -lt 3) { throw "versionName 需要三段式 x.y.z，实际：$name" }
 $major = [int]$parts[0]
 $minor = [int]$parts[1]
-$patch = [int]$parts[2]
-$patch += 1
-if ($patch -ge 10) {
-    $patch = 0
-    $minor += 1
-    if ($minor -ge 10) { $minor = 0; $major += 1 }
-}
+$patch = [int]$parts[2] + 1
 $newName = "$major.$minor.$patch"
 $newCode = $code + 1
 
