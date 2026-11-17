@@ -222,6 +222,7 @@
 @media not all and (min-width: 768px) {
   .wrapper {
     flex-shrink: 0;
+    max-height: calc(var(--app-viewport-height, 100vh) - 120px);
     max-height: calc(var(--app-viewport-height, 100dvh) - 120px);
   }
 
