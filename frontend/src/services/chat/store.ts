@@ -306,12 +306,17 @@ export const initChat = (): Promise<void> => {
   set({ initError: false })
   initTask = (async () => {
     try {
+      // 启动链路逐步留痕：「白屏」时日志里最后一条就是卡住的位置。
+      logInfo('boot', 'initChat: 开始读会话摘要')
       const summaries = await db.loadSessionSummaries()
+      logInfo('boot', `initChat: 读到 ${summaries.length} 条摘要`)
       if (epoch === historyEpoch) {
         set({ ready: true, sessions: sortSessions(summaries) })
+        logInfo('boot', 'initChat: 列表就绪')
       }
     } catch (error) {
       if (epoch === historyEpoch) {
+        logError('boot', 'initChat 失败', error)
         set({ initError: true })
         db.reportStorageError('read local sessions')(error)
       }
