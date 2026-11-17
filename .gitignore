@@ -1,0 +1,33 @@
+# 前端构建产物
+node_modules/
+dist/
+
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.apk
+*.aab
+
+# 签名材料：绝不入库（丢了就没法覆盖升级，自己备份好）
+keystore/
+*.keystore
+*.jks
+
+# 本机工具链与临时产物
+.toolchain/
+release/
+.shots/
+.work/
+analysis/
+*.log
+.DS_Store
+Thumbs.db
+
+# 构建期由 build-apk 同步进来的前端产物（真源是 frontend/dist）
+android/app/src/main/assets/web/
+frontend/src/icon.png
+
