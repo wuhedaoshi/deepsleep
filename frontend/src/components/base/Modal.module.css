@@ -7,7 +7,8 @@
   align-items: center;
   justify-content: center;
   background-color: rgba(0, 0, 0, var(--overlay-opacity));
-  backdrop-filter: blur(2px);
+  /* 不要 backdrop-filter：整屏模糊在部分 Android WebView（Mali GPU）上会整层渲染成纯白，
+     表现就是「界面全白但 JS 一切正常」。2px 的模糊本来也看不出来，用底色补偿即可。 */
 
   [data-ds-dark-theme] & {
     --overlay-opacity: 0.6;

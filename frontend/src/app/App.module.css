@@ -67,6 +67,9 @@
     position: fixed;
     top: var(--app-viewport-top, 0px);
     bottom: auto;
+    /* 老 WebView（Chrome < 108）不认 dvh：先给 100vh 兜底，支持 dvh 的浏览器用后一条覆盖。
+       少了这条兜底，height 会退化成 auto，fixed 的框架塌成 0 高度 —— 表现就是「界面全白」。 */
+    height: var(--app-viewport-height, 100vh);
     height: var(--app-viewport-height, 100dvh);
   }
 }
