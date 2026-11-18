@@ -1224,6 +1224,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           reply = settleReply(reply, 'stopped', Date.now())
           break
         }
+          // 附件补齐阶段失败要留痕：之前这里不打日志，用户只看到「上传失败」，日志里什么都没有。
+          logError('chat', '附件上传失败', {
+            kind: error instanceof ApiError ? error.kind : 'unknown',
+            status: error instanceof ApiError ? error.status : undefined,
+            message: error instanceof Error ? error.message : String(error),
+          })
         if (preparing) {
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'upload',

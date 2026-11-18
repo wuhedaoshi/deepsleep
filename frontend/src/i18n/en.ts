@@ -210,6 +210,7 @@ export const en = {
   uploadMaxMBSize: 'File exceeds the size limit ({size} MB). Please adjust and try again.',
   uploadMaxFiles: 'You can upload up to {count} files',
   uploadFileStatusUploading: 'Uploading...',
+  uploadInsufficientBalance: 'Insufficient balance — attachment upload rejected',
   uploadServerBusy: 'Server busy',
   uploadParseFailed: 'Parsing failed',
   uploadFileCountLimit: 'Uploaded file limit reached ({limit} files). ',

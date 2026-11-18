@@ -203,6 +203,7 @@ export const zh = {
   uploadMaxMBSize: '单个文件大小超过限制（{size}MB），请调整后重试',
   uploadMaxFiles: '上传文件最多支持 {count} 个',
   uploadFileStatusUploading: '上传中...',
+  uploadInsufficientBalance: '账户余额不足，无法上传附件',
   uploadServerBusy: '服务器繁忙',
   uploadParseFailed: '解析失败',
   uploadFileCountLimit: '已上传文件数达到上限（{limit} 个），可 ',
