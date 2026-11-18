@@ -10,7 +10,6 @@
  */
 import type { ArchiveAttachment, ArchiveRef, HistoryArchive } from './archive.js'
 import { BackupError } from './errors.js'
-import { sessionFromArchive } from './toLocal.js'
 import type { Session } from '../types.js'
 
 export type ImportedFile = { id: string; blob: Blob }
@@ -142,8 +141,9 @@ export const runImport = async (
     }
     let session: Session
     try {
-      const raw = await archive.readSession(ref)
-      session = sessionFromArchive(raw, archive.summary.format, archive.mimeTypeOf(ref.id))
+      // 走 `archive.sessionOf`：它会在转换前按 export_path 绑定附件 id，
+      // 直接调 `sessionFromArchive` 会绕过绑定，附件原件全查不到（MIME 也是空）。
+      session = await archive.sessionOf(ref)
     } catch (error) {
       if (error instanceof BackupError) {
         skipped += 1
