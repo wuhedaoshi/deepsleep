@@ -120,18 +120,21 @@ const userFragments = (
   // 从官方归档导入的提问：FILE 条目沿用原始字段（width / height / token_usage 等本地不建模），
   // 只把 export_path 换成这次导出的新路径。
   const archivedFragments = (message.archivedFragments ?? []) as { type?: unknown; files?: unknown[] }[]
-  const archivedFile = archivedFragments.find((fragment) => fragment.type === 'FILE')
-  if (archivedFile !== undefined && Array.isArray(archivedFile.files)) {
+  // 一条提问可能有**多个** FILE 片段，全部按原样还回去，只重写 export_path
+  const archivedFileFragments = archivedFragments.filter(
+    (fragment) => fragment.type === 'FILE' && Array.isArray(fragment.files)
+  )
+  if (archivedFileFragments.length > 0) {
     return [
-      {
+      ...archivedFileFragments.map((fragment) => ({
         type: 'FILE',
-        files: archivedFile.files.map((entry) => {
+        files: (fragment.files ?? []).map((entry) => {
           const file = (entry ?? {}) as Record<string, unknown>
           const id = typeof file.id === 'string' ? file.id : ''
           const name = typeof file.file_name === 'string' ? file.file_name : 'file'
           return { ...file, export_path: allocate(id, name) }
         }),
-      },
+      })),
       { type: 'REQUEST', content: message.content },
     ]
   }
