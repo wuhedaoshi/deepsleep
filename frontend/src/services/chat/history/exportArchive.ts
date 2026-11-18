@@ -214,6 +214,21 @@ const assertTreeExportable = (session: Session): void => {
       throw new BackupError('backupIncomplete')
     }
   }
+  // 角色约束（官方导入器同样校验）：根必须是提问，父子之间角色必须交替。
+  // 本地可以从 v4 归档迁进来，不保证满足；不拦下来就会导出成「导入必失败」的包。
+  const roleOf = new Map(session.messages.map((message) => [message.id, message.role]))
+  for (const message of session.messages) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      if (message.role !== 'user') {
+        throw new BackupError('backupIncomplete')
+      }
+      continue
+    }
+    if (roleOf.get(parentId) === message.role) {
+      throw new BackupError('backupIncomplete')
+    }
+  }
   // 环检测：迭代标记，每个节点最多访问一次
   const state = new Map<string, number>()
   const byId = new Map(session.messages.map((message) => [message.id, message]))
