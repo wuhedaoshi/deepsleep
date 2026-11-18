@@ -144,6 +144,7 @@ export const en = {
   backupUnrecognized: 'File not recognized. Please choose a DeepSeek chat history ZIP.',
   backupNewerVersion: 'This file uses a newer version. Please update the app before importing.',
   backupInvalidVersion: 'The file version is invalid and cannot be imported.',
+  backupTooLarge: 'Export is too large (exceeds single-archive limit); split it into batches',
   backupIncomplete: 'The file is incomplete and cannot be imported.',
   backupInvalidBranches: 'The message branches in this file are corrupted and cannot be imported.',
   backupInvalidFiles: 'The attachment data in this file is corrupted and cannot be imported.',
