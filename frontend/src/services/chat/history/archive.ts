@@ -5,7 +5,7 @@
  * 真正的正文按会话逐个解压，内存里只留当前这一个。
  */
 import { BackupError } from './errors.js'
-import { attachmentPathOf, parseAttachmentPath, parseSessionPath, readSessionId, safePathSegment, sessionFilesDir } from './paths.js'
+import { parseAttachmentPath, parseSessionPath, readSessionId, safePathSegment, sessionFilesDir } from './paths.js'
 import { sessionFromArchive, type ArchiveFormat } from './toLocal.js'
 import { ZipArchive, ZipError, type ZipSource } from './zip.js'
 
@@ -181,28 +181,20 @@ export class HistoryArchive {
       ;(attachment as { id: string }).id = fileId
       this.boundFiles.set(`${sessionId}/${fileId}`, attachment)
     }
+
+    // 先把本会话声明的所有 fileId 收齐：v4 在 `message.files[]`，v3 在 `FILE.files[]`
+    const declared: string[] = []
+    const v3Entries: { id: string; exportPath: string }[] = []
     for (const message of messages) {
       if (message === null || typeof message !== 'object') {
         continue
       }
-      // 本地 v4：按 message.files 与旧约定绑定
       const files = (message as { files?: unknown }).files
       if (Array.isArray(files)) {
         for (const entry of files) {
-          if (entry === null || typeof entry !== 'object') {
-            continue
-          }
-          const file = entry as { id?: unknown; name?: unknown; serverId?: unknown }
-          if (typeof file.id !== 'string') {
-            continue
-          }
-          const guessed = attachmentPathOf(sessionId, file.id, typeof file.name === 'string' ? file.name : '')
-          bind(file.id, guessed)
-          // 老归档的登记名可能是 `file.id + '_' + 原名`，两种都试
-          for (const candidate of this.attachmentsBySession.get(sessionId) ?? []) {
-            if (candidate.path.startsWith(`${sessionFilesDir(sessionId)}${safePathSegment(file.id)}_`)) {
-              bind(file.id, candidate.path)
-            }
+          const id = (entry as { id?: unknown } | null)?.id
+          if (typeof id === 'string') {
+            declared.push(id)
           }
         }
       }
@@ -211,24 +203,38 @@ export class HistoryArchive {
         continue
       }
       for (const fragment of fragments) {
-        if (fragment === null || typeof fragment !== 'object') {
-          continue
-        }
-        const record = fragment as { type?: unknown; files?: unknown }
-        if (record.type !== 'FILE' || !Array.isArray(record.files)) {
+        const record = fragment as { type?: unknown; files?: unknown } | null
+        if (record === null || record === undefined || record.type !== 'FILE' || !Array.isArray(record.files)) {
           continue
         }
         for (const entry of record.files) {
-          if (entry === null || typeof entry !== 'object') {
+          const file = (entry ?? {}) as { id?: unknown; export_path?: unknown }
+          if (typeof file.id !== 'string') {
             continue
           }
-          const file = entry as { id?: unknown; export_path?: unknown }
-          if (typeof file.id !== 'string' || typeof file.export_path !== 'string') {
-            continue
+          declared.push(file.id)
+          if (typeof file.export_path === 'string') {
+            v3Entries.push({ id: file.id, exportPath: file.export_path })
           }
-          bind(file.id, file.export_path)
         }
       }
+    }
+
+    // 按「最长 id 前缀」判定条目归属：`f_x_y_name` 属于 `f_x_y` 而不是 `f_x`。
+    // 用最短前缀兜底会把 `f_x` 的条目错绑到 `f_x_y` 上（两个附件都读成后者）。
+    const longestFirst = [...new Set(declared)].sort((left, right) => right.length - left.length)
+    const dir = sessionFilesDir(sessionId)
+    for (const attachment of this.attachmentsBySession.get(sessionId) ?? []) {
+      const owner = longestFirst.find((id) =>
+        attachment.path.startsWith(`${dir}${safePathSegment(id)}_`)
+      )
+      if (owner !== undefined) {
+        bind(owner, attachment.path)
+      }
+    }
+    // v3 的 export_path 是权威来源，最后覆盖
+    for (const entry of v3Entries) {
+      bind(entry.id, entry.exportPath)
     }
   }
 
