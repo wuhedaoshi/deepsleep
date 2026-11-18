@@ -301,6 +301,10 @@ final class DiagnosticSnapshot {
                 + "rootVisibility:cs?cs.visibility:null,"
                 + "rootOpacity:cs?cs.opacity:null,"
                 + "rootRect:root?(function(r){return Math.round(r.width)+'x'+Math.round(r.height)})(root.getBoundingClientRect()):null,"
+                // #root 自己有 height:100%，塌陷的是外壳 .frame，所以必须单独量它
+                + "frameRect:(function(){var all=document.querySelectorAll('[class]');var f=null;for(var i=0;i<all.length;i++){if((all[i].className+'').indexOf('frame')>=0){f=all[i];break;}}"
+                + "if(!f)return null;var r=f.getBoundingClientRect();var cs=getComputedStyle(f);"
+                + "return {w:Math.round(r.width),h:Math.round(r.height),cssH:cs.height,overflow:cs.overflow};})(),"
                 // 地标：找第一个「有文字、面积够大、在视口内」的元素，返回它的矩形。
                 // 全屏墨量在欢迎页上区分不出「画了」与「没画」，必须量 DOM 指定位置的像素。
                 + "landmark:(function(){"
