@@ -192,9 +192,17 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
 
 const sessionJson = (session: Session): { json: Json; files: { id: string; name: string }[] } => {
   const files: { id: string; name: string }[] = []
+  // 官方用整数 id，本地是字符串（新会话是 uuid），所以按数组顺序重编号。
+  // **必须建映射**：分支靠 parent_id 表达，若按「上一条就是父」串成直线，
+  // 重新生成产生的兄弟分支会被挂到错误父节点上，导出即失真。
+  const idOf = new Map<string, number>()
+  session.messages.forEach((message, index) => {
+    idOf.set(message.id, index + 1)
+  })
   const messages = session.messages.map((message, index): Json => {
     const id = index + 1
-    const parentId = index === 0 ? null : index
+    const localParent = message.parentId
+    const parentId = localParent === null || localParent === undefined ? null : (idOf.get(localParent) ?? null)
     if (message.role === 'user') {
       for (const file of message.files) {
         files.push({ id: file.id, name: file.name })
@@ -223,17 +231,48 @@ const sessionJson = (session: Session): { json: Json; files: { id: string; name:
       fragments: replyFragments(message.blocks),
     }
   })
+  // current_message_id 指向「当前分支的叶子」，官方导入器据此还原用户停留的位置；
+  // 指向数组末尾在分叉会话里是错的。
+  const leaf = findCurrentLeaf(session, idOf)
   return {
     json: {
       id: session.id,
       title: session.title,
       pinned: session.pinned === true,
-      current_message_id: messages.length === 0 ? 0 : messages.length,
+      current_message_id: messages.length === 0 ? 0 : leaf,
       inserted_at: iso(session.createdAt),
       updated_at: iso(session.updatedAt),
       messages,
     },
     files,
+  }
+}
+
+/**
+ * 找出当前分支的最末一条消息（导出时作为 `current_message_id`）。
+ *
+ * 从根沿 selectedChildId 走到底；分支信息缺失时退化为「数组最后一条」。
+ */
+const findCurrentLeaf = (session: Session, idOf: Map<string, number>): number => {
+  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  const rootId = session.rootMessageId
+  const start = rootId === null || rootId === undefined ? session.messages[0] : byId.get(rootId)
+  if (start === undefined) {
+    return session.messages.length
+  }
+  let cursor: Message = start
+  const seen = new Set<string>()
+  for (;;) {
+    if (seen.has(cursor.id)) {
+      return idOf.get(cursor.id) ?? session.messages.length
+    }
+    seen.add(cursor.id)
+    const nextId = cursor.selectedChildId
+    const next = nextId === undefined ? undefined : byId.get(nextId)
+    if (next === undefined) {
+      return idOf.get(cursor.id) ?? session.messages.length
+    }
+    cursor = next
   }
 }
 
