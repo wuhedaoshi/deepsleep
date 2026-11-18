@@ -93,7 +93,9 @@ const assertSafeId = (value: string): string => {
 }
 
 const attachmentPath = (sessionId: string, fileId: string, name: string): string =>
-  `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`
+  // 官方导入器会把路径按 NFC 归一化后比对，所以这里也先归一化，
+  // 否则 `b_é.png` 与 `e\u0301.png` 这类等价形式会在上游撞名、整包被拒。
+  `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`.normalize('NFC')
 
 const userFragments = (message: UserMessage, pathOf: Map<string, string>): Json[] => {
   const fragments: Json[] = [{ type: 'REQUEST', content: message.content }]
@@ -349,10 +351,14 @@ const sessionJson = (
     const base = attachmentPath(session.id, fileId, name)
     let candidate = base
     let suffix = 2
+    // 扩展名只在**最后一段路径**里找：会话 id 可能含点（`s.1`），
+    // 直接 lastIndexOf('.') 会命中目录名，把目录改成 `s_2.1_files` 而导致整包被拒。
+    const slash = base.lastIndexOf('/')
+    const dot = base.lastIndexOf('.')
+    const hasExtension = dot > slash
+    const stem = hasExtension ? base.slice(0, dot) : base
+    const ext = hasExtension ? base.slice(dot) : ''
     while (usedPaths.has(candidate)) {
-      const dot = base.lastIndexOf('.')
-      const stem = dot === -1 ? base : base.slice(0, dot)
-      const ext = dot === -1 ? '' : base.slice(dot)
       candidate = `${stem}_${suffix}${ext}`
       suffix += 1
     }
