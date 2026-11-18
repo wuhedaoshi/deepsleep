@@ -70,6 +70,11 @@ public class MainActivity extends Activity {
     /** 强引用 JS 桥对象：只被行内表达式引用的话，GC 之后桥就失效了（见 addJavascriptInterface 处的注释）。 */
     private Object nativeBridge;
 
+    /** 供 BlankScreenGuard 等辅助类写日志 */
+    static void logFromGuard(String line) {
+        android.util.Log.i(TAG, line);
+    }
+
     // ---- 运行日志：前端把已脱敏的行交过来，这里顺序写到外部私有目录（用户能翻到） ----
     private static final String LOG_FILE = "deepsleep.log";
     /** 单文件上限；超了滚成 .1，只留一份历史，别把用户空间吃掉 */
@@ -156,6 +161,9 @@ public class MainActivity extends Activity {
         startServer();
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
+        // 不额外加硬件层：LAYER_TYPE_HARDWARE 只是多套一层离屏缓冲，不是「让它画出来」的开关，
+        // 反而可能是白屏的诱因之一。白屏由 BlankScreenGuard 实测后按阶梯恢复。
+        web.setLayerType(View.LAYER_TYPE_NONE, null);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -532,6 +540,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        if (web != null) {
+            // 让 WebView 自己也暂停：部分 OEM WebView（Honor/MagicOS 实测）只靠 Activity
+            // 的生命周期不会停合成器，回来之后 surface 是空的，看起来就是整片白。
+            web.onPause();
+        }
         super.onPause();
     }
 
@@ -549,6 +562,7 @@ public class MainActivity extends Activity {
         if (web == null) {
             return;
         }
+        web.onResume();
         web.resumeTimers();
         web.invalidate();
         if (!stoppedOnce) {
@@ -580,9 +594,6 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        // 记录销毁原因：反复重建时，靠这条区分「配置变化/主动退出」与「系统回收」
-        appendLogLine(new java.util.Date().toInstant().toString()
-                + " INFO [native] onDestroy isFinishing=" + isFinishing());
         Uri partial = null;
         synchronized (archiveLock) {
             if (archiveState != ARCHIVE_IDLE) {
@@ -601,6 +612,16 @@ public class MainActivity extends Activity {
         archiveStopping = true;
         archiveWriter = null;
         deleteArchiveDocument(partial);
+        // WebView 必须显式销毁：否则它的渲染线程与 Context 会跟着泄漏，
+        // 多次重建后容易表现为「页面在、画面空」。
+        if (web != null) {
+            ViewGroup parent = (ViewGroup) web.getParent();
+            if (parent != null) {
+                parent.removeView(web);
+            }
+            web.destroy();
+            web = null;
+        }
         super.onDestroy();
     }
 
@@ -903,7 +924,17 @@ public class MainActivity extends Activity {
         else super.onBackPressed();
     }
 
+    /** 本地 HTTP 服务是进程级的：Activity 重建（旋转/配置变化/recreate）不应再起一份 */
+    private static volatile boolean serverStarted = false;
+
     private void startServer() {
+        synchronized (MainActivity.class) {
+            if (serverStarted) {
+                logFromGuard("本地服务已在运行，跳过重复启动");
+                return;
+            }
+            serverStarted = true;
+        }
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -917,7 +948,9 @@ public class MainActivity extends Activity {
                             }
                         }).start();
                     }
-                } catch (IOException ignored) {
+                } catch (IOException error) {
+                    // 端口被占（上一次进程没退干净）时不再静默：留一行给诊断
+                    logFromGuard("本地服务启动失败：" + error.getMessage());
                 }
             }
         });
