@@ -1,5 +1,18 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.3.13 · 实验线（导入/导出保真收口；与稳定线 1.2.13 同补丁号）
+
+在稳定线 1.2.13 的全部内容之上，含上下文压缩。本轮补的是**导入/导出保真**（两边同源）：
+
+**导出**：拓扑编号（父先于子）、老会话 normalize、树与角色校验、路径安全与去重（含 NFC）、
+官方 `nullable` 必填键补齐、`archivedFragments` 原样留存还原（保住 `TIP`/`CONTENT_RISK`/
+`PARTIAL_FILE_READ`/`TOOL_IMAGE_SEARCH`/工具状态/`snippet`/图片尺寸）。
+
+**导入**：新增 `paths.ts` 统一 id 规则；附件改按 `export_path` 绑定（不再拆文件名，
+`f_a` 曾被截成 `f`）；三阶段绑定（精确 → 前缀兜底 → export_path 权威且缺失时清除猜测）；
+NFC 统一与路径占用；v4 无 `fragments` 时按 `message.files[]` 补绑；导入管线改走 `archive.sessionOf`。
+
+**验收**：官方 10 段片段往返全保留；`s.1`、`f_a`、撞名路径、缺原件、NFC 等价名、v4 无 fragments 全通过。
 ## 1.3.13 · 实验线（导出结构性修复；与稳定线 1.2.13 同补丁号）
 
 导出侧七轮复审后的全部修复（与稳定线同源）：
