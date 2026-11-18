@@ -14,6 +14,7 @@
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
 import { normalizeSession } from '../branches.js'
 import { BackupError } from './errors.js'
+import { attachmentEntryPath, readSessionId, safePathSegment } from './paths.js'
 import { ownedBytes } from './zip.js'
 
 const FORMAT_VERSION = 3
@@ -81,62 +82,53 @@ const messageStatus = (message: Message): string => {
   return 'INCOMPLETE'
 }
 
-/** 归档里附件路径由会话 id 与附件 id 拼成；名字里的斜杠必须先抹平。 */
-// 只保留安全字符：控制字符（含 NUL）、路径分隔符、Windows 保留符号、点段一律替换。
-// 控制字符用码点过滤而不是正则里的 \u0000-\u001f 范围（会被 lint 判为 no-control-regex）。
-const safeName = (name: string): string =>
-  Array.from(name)
-    .map((char) => ((char.codePointAt(0) ?? 0) < 0x20 ? '_' : char))
-    .join('')
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\.{2,}/g, '_')
-    .replace(/^\.+/, '_')
-    .slice(0, 80) || 'file'
 
 /**
- * 会话 id / 附件 id 会直接进 ZIP 路径，必须先是「安全的一段路径」。
+ * 会话 id 必须合法（与官方一致：允许点与非 ASCII，只禁止分隔符、`.`、`..`、空）。
  *
- * 本地 v4 归档转出来的 id 不受我们控制（可能是 `../x`），拼进路径后官方导入器
- * 会认为归档损坏、整包拒绝。这里提前拦下。
+ * 规则与导入共用 `paths.ts`，避免出现「能导出却导不回来」。
  */
-const assertSafeId = (value: string): string => {
-  const safe = /^[A-Za-z0-9._-]+$/.test(value) && !value.includes('..') && value !== '.' && value !== ''
-  if (!safe) {
+const requireSessionId = (value: string): string => {
+  if (readSessionId(value) === null) {
     throw new BackupError('backupIncomplete')
   }
   return value
 }
 
-const attachmentPath = (sessionId: string, fileId: string, name: string): string =>
-  // 官方导入器会把路径按 NFC 归一化后比对，所以这里也先归一化，
-  // 否则 `b_é.png` 与 `e\u0301.png` 这类等价形式会在上游撞名、整包被拒。
-  `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`.normalize('NFC')
+const attachmentPath = (sessionId: string, fileId: string, name: string): string => {
+  requireSessionId(sessionId)
+  // 官方导入器按 NFC 比对路径，这里统一归一化（否则 `b_é.png` 与 `e\u0301.png` 会撞名）
+  return attachmentEntryPath(sessionId, fileId, safePathSegment(name)).normalize('NFC')
+}
 
 const userFragments = (
   message: UserMessage,
   pathOf: Map<string, string>,
   allocate: (fileId: string, name: string) => string
 ): Json[] => {
-  // 从官方归档导入的提问：FILE 条目沿用原始字段（width / height / token_usage 等本地不建模），
-  // 只把 export_path 换成这次导出的新路径。
-  const archivedFragments = (message.archivedFragments ?? []) as { type?: unknown; files?: unknown[] }[]
-  // 一条提问可能有**多个** FILE 片段，全部按原样还回去，只重写 export_path
-  const archivedFileFragments = archivedFragments.filter(
-    (fragment) => fragment.type === 'FILE' && Array.isArray(fragment.files)
-  )
-  if (archivedFileFragments.length > 0) {
-    return [
-      ...archivedFileFragments.map((fragment) => ({
+  // 从官方归档导入的提问：**按原片段顺序全部还原**，只把 FILE 条目的 export_path
+  // 换成这次导出的新路径。提问侧也可能有 TIP / CONTENT_RISK 等本地不建模的片段，
+  // 只还原 FILE + REQUEST 会让它们静默消失。
+  const archivedFragments = (message.archivedFragments ?? []) as {
+    type?: unknown
+    files?: unknown[]
+    content?: unknown
+  }[]
+  if (archivedFragments.length > 0) {
+    return archivedFragments.map((fragment) => {
+      if (fragment.type !== 'FILE' || !Array.isArray(fragment.files)) {
+        return fragment as Json
+      }
+      return {
         type: 'FILE',
-        files: (fragment.files ?? []).map((entry) => {
+        files: fragment.files.map((entry) => {
           const file = (entry ?? {}) as Record<string, unknown>
           const id = typeof file.id === 'string' ? file.id : ''
           const name = typeof file.file_name === 'string' ? file.file_name : 'file'
           return { ...file, export_path: allocate(id, name) }
         }),
-      })),
-      { type: 'REQUEST', content: message.content },
-    ]
+      }
+    })
   }
   const fragments: Json[] = [{ type: 'REQUEST', content: message.content }]
   if (message.files.length > 0) {
@@ -621,7 +613,7 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
       throw new BackupError('backupTooLarge')
     }
     // 会话 id 也进 ZIP 路径：先校验再用
-    assertSafeId(session.id)
+    requireSessionId(session.id)
     await addJson(`chat_sessions/${session.id}.json`, json)
     entryCount += 1
     index.push({

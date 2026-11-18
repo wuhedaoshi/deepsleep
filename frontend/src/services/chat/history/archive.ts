@@ -5,6 +5,7 @@
  * 真正的正文按会话逐个解压，内存里只留当前这一个。
  */
 import { BackupError } from './errors.js'
+import { parseAttachmentPath, parseSessionPath, readSessionId } from './paths.js'
 import { sessionFromArchive, type ArchiveFormat } from './toLocal.js'
 import { ZipArchive, ZipError, type ZipSource } from './zip.js'
 
@@ -14,9 +15,8 @@ const OFFICIAL_VERSION = 3
 const LOCAL_VERSION = 4
 const LOCAL_MARKER = 'local-v1'
 
-const SESSION_PATH = /^chat_sessions\/([\w-]{1,80})\.json$/
-// 附件 id 用懒匹配：原始文件名里也有下划线，贪婪匹配会把文件名并进 id。
-const ATTACHMENT_PATH = /^chat_sessions\/([\w-]{1,80})_files\/([\w-]{1,80}?)_(.+)$/
+// 会话 id 与附件条目名的规则统一在 paths.ts：导入与导出共用同一套，
+// 避免出现「能导出却导不回来」（含点 id）这类单向规则。
 
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   'jpg',
@@ -108,7 +108,7 @@ const decodeJson = (bytes: Uint8Array): unknown => {
 
 const indexEntry = (value: unknown): { id: string; title: string; pinned: boolean; updatedAt: number } | null => {
   const entry = object(value)
-  if (!entry || typeof entry.id !== 'string' || !SESSION_PATH.test(`chat_sessions/${entry.id}.json`)) {
+  if (!entry || typeof entry.id !== 'string' || readSessionId(entry.id) === null) {
     return null
   }
   const updated = typeof entry.updated_at === 'string' ? Date.parse(entry.updated_at) : NaN
@@ -126,6 +126,8 @@ export class HistoryArchive {
   private readonly zip: ZipArchive
   private readonly attachmentByKey: ReadonlyMap<string, ArchiveAttachment>
   private readonly attachmentsBySession: ReadonlyMap<string, readonly ArchiveAttachment[]>
+  /** 绑定后的 (sessionId/fileId) → 附件；由 `bindFiles` 在读完会话 JSON 后填充 */
+  private readonly boundFiles = new Map<string, ArchiveAttachment>()
 
   /** 归档的索引与附件表由 `openHistoryArchive` 提供；不要直接 new 出一个半成品。 */
   constructor(
@@ -147,8 +149,58 @@ export class HistoryArchive {
     return this.attachmentsBySession.get(sessionId) ?? []
   }
 
+  /**
+   * 会话 JSON 声明之后，把「条目路径」绑定到「fileId」。
+   *
+   * 为什么不从文件名拆 id：附件 id 里可能有下划线（`f_a`），懒匹配会截成 `f`，
+   * 之后用会话 JSON 里的 `f_a` 查不到，原件就丢了。官方也是用 `export_path` 建索引的。
+   */
+  private bindFiles(sessionId: string, raw: unknown): void {
+    if (raw === null || typeof raw !== 'object') {
+      return
+    }
+    const messages = (raw as { messages?: unknown }).messages
+    if (!Array.isArray(messages)) {
+      return
+    }
+    for (const message of messages) {
+      if (message === null || typeof message !== 'object') {
+        continue
+      }
+      const fragments = (message as { fragments?: unknown }).fragments
+      if (!Array.isArray(fragments)) {
+        continue
+      }
+      for (const fragment of fragments) {
+        if (fragment === null || typeof fragment !== 'object') {
+          continue
+        }
+        const record = fragment as { type?: unknown; files?: unknown }
+        if (record.type !== 'FILE' || !Array.isArray(record.files)) {
+          continue
+        }
+        for (const entry of record.files) {
+          if (entry === null || typeof entry !== 'object') {
+            continue
+          }
+          const file = entry as { id?: unknown; export_path?: unknown }
+          if (typeof file.id !== 'string' || typeof file.export_path !== 'string') {
+            continue
+          }
+          const attachment = this.attachmentByKey.get(file.export_path.normalize('NFC'))
+          if (attachment === undefined) {
+            continue
+          }
+          // 绑定：id 以会话 JSON 为准，路径以条目名为准
+          (attachment as { id: string }).id = file.id
+          this.boundFiles.set(`${sessionId}/${file.id}`, attachment)
+        }
+      }
+    }
+  }
+
   fileOf(sessionId: string, fileId: string): ArchiveAttachment | undefined {
-    return this.attachmentByKey.get(`${sessionId}/${fileId}`)
+    return this.boundFiles.get(`${sessionId}/${fileId}`)
   }
 
   /** 会话正文的 MIME 建议值：按归档内的原始文件名推，取不到时为空串。 */
@@ -163,11 +215,10 @@ export class HistoryArchive {
 
   /** 会话正文 → 本地 `Session`。 */
   async sessionOf(ref: ArchiveRef) {
-    return sessionFromArchive(
-      await this.readSession(ref),
-      this.summary.format,
-      this.mimeTypeOf(ref.id)
-    )
+    const raw = await this.readSession(ref)
+    // 先按 export_path 绑定附件 id，再转换：mimeTypeOf(fileId) 依赖这次绑定
+    this.bindFiles(ref.id, raw)
+    return sessionFromArchive(raw, this.summary.format, this.mimeTypeOf(ref.id))
   }
 
   /** 附件原件；缺失或损坏（解压失败）时返回 `undefined`，不打断整包导入。 */
@@ -205,21 +256,23 @@ const scanEntries = (zip: ZipArchive): Scan => {
     if (entry === undefined) {
       continue
     }
-    const session = SESSION_PATH.exec(name)
-    if (session !== null) {
-      sessions.set(session[1], { path: name, size: entry.size })
+    const sessionId = parseSessionPath(name)
+    if (sessionId !== null) {
+      sessions.set(sessionId, { path: name, size: entry.size })
       continue
     }
-    const file = ATTACHMENT_PATH.exec(name)
-    if (file === null) {
+    const attachmentPath = parseAttachmentPath(name)
+    if (attachmentPath === null) {
       continue
     }
-    const [, sessionId, fileId, tail] = file
+    const { sessionId: fileSessionId, tail } = attachmentPath
     const extension = extensionOf(tail)
     const attachment: ArchiveAttachment = {
-      key: `${sessionId}/${fileId}`,
-      sessionId,
-      id: fileId,
+      // 不再从文件名拆 id（`f_a` 会被截成 `f`）：真正的 fileId 以会话 JSON 的
+      // FILE.export_path 为准，这里先按路径登记，绑定阶段再补 id。
+      key: name,
+      sessionId: fileSessionId,
+      id: '',
       name: tail,
       path: name,
       mimeType: MIME_BY_EXTENSION[extension] ?? '',
@@ -227,9 +280,9 @@ const scanEntries = (zip: ZipArchive): Scan => {
       size: entry.size,
     }
     attachments.set(attachment.key, attachment)
-    const existing = bySession.get(sessionId)
+    const existing = bySession.get(fileSessionId)
     if (existing === undefined) {
-      bySession.set(sessionId, [attachment])
+      bySession.set(fileSessionId, [attachment])
     } else {
       existing.push(attachment)
     }
