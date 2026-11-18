@@ -1174,7 +1174,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
-        logInfo('chat', '发起请求', { model: MODEL, rounds: getContextRounds(prepared.history).length })
+        logInfo('chat', '发起请求', {
+        model: MODEL,
+        rounds: getContextRounds(prepared.history).length,
+        // 关键：区分「纯文本」与「带附件」。之前查「上传失败」时无法确认用户当时有没有附件。
+        files: prepared.question.files.length,
+      })
         const messages = toRequestMessages(
           prepared.history,
           prepared.question,
@@ -1229,6 +1234,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             kind: error instanceof ApiError ? error.kind : 'unknown',
             status: error instanceof ApiError ? error.status : undefined,
             message: error instanceof Error ? error.message : String(error),
+            files: request.question.files.length,
           })
         if (preparing) {
           reply = settleReply(reply, 'error', Date.now(), {
