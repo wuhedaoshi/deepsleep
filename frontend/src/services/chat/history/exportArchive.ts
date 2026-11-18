@@ -12,6 +12,7 @@
  * 写包是流式的：fflate 每产出一块就交给 sink，峰值只跟单个 entry 有关，不做整包物化。
  */
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
+import { normalizeSession } from '../branches.js'
 import { ownedBytes } from './zip.js'
 
 const FORMAT_VERSION = 3
@@ -190,7 +191,9 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
   return fragments
 }
 
-const sessionJson = (session: Session): { json: Json; files: { id: string; name: string }[] } => {
+const sessionJson = (raw: Session): { json: Json; files: { id: string; name: string }[] } => {
+  // 升级前保存的线性会话没有分支字段：先补齐，否则导出会写出多个根节点，官方导入器直接拒绝。
+  const session = normalizeSession(raw)
   const files: { id: string; name: string }[] = []
   // 官方用整数 id，本地是字符串（新会话是 uuid），所以按数组顺序重编号。
   // **必须建映射**：分支靠 parent_id 表达，若按「上一条就是父」串成直线，
