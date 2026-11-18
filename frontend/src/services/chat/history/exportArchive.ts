@@ -112,7 +112,29 @@ const attachmentPath = (sessionId: string, fileId: string, name: string): string
   // 否则 `b_é.png` 与 `e\u0301.png` 这类等价形式会在上游撞名、整包被拒。
   `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`.normalize('NFC')
 
-const userFragments = (message: UserMessage, pathOf: Map<string, string>): Json[] => {
+const userFragments = (
+  message: UserMessage,
+  pathOf: Map<string, string>,
+  allocate: (fileId: string, name: string) => string
+): Json[] => {
+  // 从官方归档导入的提问：FILE 条目沿用原始字段（width / height / token_usage 等本地不建模），
+  // 只把 export_path 换成这次导出的新路径。
+  const archivedFragments = (message.archivedFragments ?? []) as { type?: unknown; files?: unknown[] }[]
+  const archivedFile = archivedFragments.find((fragment) => fragment.type === 'FILE')
+  if (archivedFile !== undefined && Array.isArray(archivedFile.files)) {
+    return [
+      {
+        type: 'FILE',
+        files: archivedFile.files.map((entry) => {
+          const file = (entry ?? {}) as Record<string, unknown>
+          const id = typeof file.id === 'string' ? file.id : ''
+          const name = typeof file.file_name === 'string' ? file.file_name : 'file'
+          return { ...file, export_path: allocate(id, name) }
+        }),
+      },
+      { type: 'REQUEST', content: message.content },
+    ]
+  }
   const fragments: Json[] = [{ type: 'REQUEST', content: message.content }]
   if (message.files.length > 0) {
     fragments.push({
@@ -165,7 +187,41 @@ const hasError = (block: ReplyBlock): boolean =>
  * `TOOL_SEARCH` / `TOOL_OPEN` / `TOOL_FIND` / `READ_LINK`，状态写在 fragment.status 上。
  * 这里顺带吃掉紧随其后的结果块，避免它变成一个空的废弃 fragment。
  */
-const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
+/**
+ * 把导入时留存的官方片段原样写回，只重写 FILE 条目里的 `export_path`
+ * （旧路径指向原归档，必须换成这次导出的新路径，否则图片会失联）。
+ */
+const rewriteArchivedFragment = (fragment: unknown, pathOf: Map<string, string>): Json => {
+  if (fragment === null || typeof fragment !== 'object') {
+    return fragment as Json
+  }
+  const record = fragment as Record<string, unknown>
+  if (record.type !== 'FILE' || !Array.isArray(record.files)) {
+    return record as Json
+  }
+  return {
+    ...record,
+    files: record.files.map((entry) => {
+      if (entry === null || typeof entry !== 'object') {
+        return entry
+      }
+      const file = entry as Record<string, unknown>
+      const id = typeof file.id === 'string' ? file.id : ''
+      return { ...file, export_path: pathOf.get(id) ?? null }
+    }),
+  } as Json
+}
+const replyFragments = (
+  blocks: readonly ReplyBlock[],
+  archived: readonly unknown[] | undefined,
+  pathOf: Map<string, string>
+): Json[] => {
+  // 从官方归档导入的回答：按原片段**原样**写回。
+  // 本地块模型覆盖不到 TIP / CONTENT_RISK / PARTIAL_FILE_READ / TOOL_IMAGE_SEARCH，
+  // 也丢了工具状态与 snippet、stage_id；只按 blocks 重建会让这些内容静默消失。
+  if (archived !== undefined) {
+    return archived.map((fragment) => rewriteArchivedFragment(fragment, pathOf))
+  }
   const fragments: Json[] = []
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]
@@ -416,7 +472,7 @@ const sessionJson = (
         search_enabled: false,
         accumulated_token_usage: 0,
         inserted_at: iso(message.createdAt),
-        fragments: userFragments(message, pathOf),
+        fragments: userFragments(message, pathOf, allocatePath),
       }
     }
     return {
@@ -428,7 +484,7 @@ const sessionJson = (
       search_enabled: message.search === true,
       accumulated_token_usage: totalTokens(message),
       inserted_at: iso(message.createdAt),
-      fragments: replyFragments(message.blocks),
+      fragments: replyFragments(message.blocks, message.archivedFragments, pathOf),
     }
   })
   // current_message_id 指向「当前分支的叶子」，官方导入器据此还原用户停留的位置；
