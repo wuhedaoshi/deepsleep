@@ -41,12 +41,20 @@ final class DiagnosticSnapshot {
     private final WebView web;
     private final Sink sink;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /** 像素统计放到后台：1080x2175 的数百万次 getPixel 放在主线程会卡帧 */
+    private static final java.util.concurrent.ExecutorService STATS =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    /** 同一时刻只允许一个抓屏在飞，避免连续采样叠加内存峰值 */
+    private final java.util.concurrent.atomic.AtomicBoolean capturing =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // 绘制计数：只累加，不做任何绘制决策
     private int drawCount = 0;
     private int preDrawCount = 0;
     private long lastDrawAt = 0;
     private boolean listenersAttached = false;
+    /** 销毁后异步回调一律丢弃 */
+    private volatile boolean disposedFlag = false;
 
     // WebView 回调状态
     private long pageFinishedAt = 0;
@@ -83,6 +91,20 @@ final class DiagnosticSnapshot {
             listenersAttached = true;
         } catch (Throwable error) {
             sink.write("[snap] 监听器挂载失败: " + error.getClass().getSimpleName());
+        }
+    }
+
+    /** 取消所有待执行的快照任务并摘掉监听；Activity 销毁前必须调用 */
+    void dispose() {
+        handler.removeCallbacksAndMessages(null);
+        disposedFlag = true;
+        if (listenersAttached && web != null) {
+            try {
+                web.getViewTreeObserver().removeOnDrawListener(null);
+            } catch (Throwable ignored) {
+                // 监听器随视图销毁即可，这里只尽力而为
+            }
+            listenersAttached = false;
         }
     }
 
@@ -321,7 +343,7 @@ final class DiagnosticSnapshot {
         web.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
-                String json = value == null ? "null" : value.replace("\\", "").replace("\"", "\"");
+                String json = unwrapJsString(value);
                 sink.write("[snap] ⑦ 页面: " + json);
                 measureLandmark(json);
             }
@@ -337,10 +359,38 @@ final class DiagnosticSnapshot {
      *   - 有字 → 标准差不小、最小亮度远低于 250
      *   - 没画 → 整块接近纯白，标准差趋近 0
      */
+    /** evaluateJavascript 回的是「带引号的 JSON 字符串」，要先解包再当对象解析 */
+    private static String unwrapJsString(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty() || "null".equals(trimmed)) {
+            return null;
+        }
+        if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() > 1) {
+            try {
+                Object decoded = new org.json.JSONTokener(trimmed).nextValue();
+                return String.valueOf(decoded);
+            } catch (Exception error) {
+                return trimmed;
+            }
+        }
+        return trimmed;
+    }
+
+    /**
+     * 量「DOM 说有字的那块区域」到底有没有墨。
+     *
+     * 欢迎页几乎全白，全屏非白千分比在「正常渲染」与「整片没画」之间是同一量级（7‰ vs 0‰），
+     * 区分不了。这里按 DOM 给的矩形抓像素，报该区域的最小亮度与标准差：
+     * 有字 → 标准差不小；没画 → 整块接近纯白。
+     */
     private void measureLandmark(String pageJson) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pageJson == null) {
             return;
         }
+        String tag = "?";
         try {
             org.json.JSONObject root = new org.json.JSONObject(pageJson);
             org.json.JSONObject landmark = root.optJSONObject("landmark");
@@ -348,7 +398,7 @@ final class DiagnosticSnapshot {
                 sink.write("[snap] ⑧ 地标: 页面上没有可用的文字元素");
                 return;
             }
-            // DOM 坐标是 CSS 像素，要按 web 的缩放换算到视图像素
+            // DOM 坐标是 CSS 像素，按 web 的缩放换算到视图像素
             float scaleX = web.getWidth() / (float) Math.max(1, root.optDouble("vw", web.getWidth()));
             float scaleY = web.getHeight() / (float) Math.max(1, root.optDouble("vh", web.getHeight()));
             int[] location = new int[2];
@@ -357,48 +407,68 @@ final class DiagnosticSnapshot {
             int y = location[1] + Math.round((float) landmark.optDouble("y") * scaleY);
             int w = Math.max(4, Math.round((float) landmark.optDouble("w") * scaleX));
             int h = Math.max(4, Math.round((float) landmark.optDouble("h") * scaleY));
-            final String tag = landmark.optString("tag", "?");
-            final Bitmap shot = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            PixelCopy.request(activity.getWindow(), new android.graphics.Rect(x, y, x + w, y + h), shot,
+            tag = landmark.optString("tag", "?");
+            final String label = tag;
+            final int boxW = w;
+            final int boxH = h;
+            final Bitmap shot;
+            try {
+                shot = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            } catch (Throwable error) {
+                sink.write("[snap] ⑧ 地标(" + tag + "): 分配失败 " + error.getClass().getSimpleName());
+                return;
+            }
+            PixelCopy.request(activity.getWindow(),
+                    new android.graphics.Rect(x, y, x + w, y + h), shot,
                     new PixelCopy.OnPixelCopyFinishedListener() {
                         @Override
-                        public void onPixelCopyFinished(int copyResult) {
-                            if (copyResult != PixelCopy.SUCCESS) {
-                                sink.write("[snap] ⑧ 地标(" + tag + "): 抓取失败 code=" + copyResult);
-                                shot.recycle();
-                                return;
-                            }
-                            long sum = 0;
-                            long sumSq = 0;
-                            int count = 0;
-                            int min = 255;
-                            for (int py = 0; py < shot.getHeight(); py += 2) {
-                                for (int px = 0; px < shot.getWidth(); px += 2) {
-                                    int color = shot.getPixel(px, py);
-                                    int lum = (Color.red(color) + Color.green(color) + Color.blue(color)) / 3;
-                                    sum += lum;
-                                    sumSq += (long) lum * lum;
-                                    count += 1;
-                                    if (lum < min) {
-                                        min = lum;
+                        public void onPixelCopyFinished(final int copyResult) {
+                            STATS.execute(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        if (copyResult != PixelCopy.SUCCESS) {
+                                            sink.write("[snap] ⑧ 地标(" + label + "): 抓取失败 code="
+                                                    + copyResult);
+                                            return;
+                                        }
+                                        long sum = 0;
+                                        long sumSq = 0;
+                                        int count = 0;
+                                        int min = 255;
+                                        for (int py = 0; py < shot.getHeight(); py += 2) {
+                                            for (int px = 0; px < shot.getWidth(); px += 2) {
+                                                int color = shot.getPixel(px, py);
+                                                int lum = (Color.red(color) + Color.green(color)
+                                                        + Color.blue(color)) / 3;
+                                                sum += lum;
+                                                sumSq += (long) lum * lum;
+                                                count += 1;
+                                                if (lum < min) {
+                                                    min = lum;
+                                                }
+                                            }
+                                        }
+                                        if (count == 0) {
+                                            sink.write("[snap] ⑧ 地标(" + label + "): 采样为空");
+                                            return;
+                                        }
+                                        double mean = sum / (double) count;
+                                        double variance = Math.max(0, sumSq / (double) count - mean * mean);
+                                        int std = (int) Math.round(Math.sqrt(variance));
+                                        sink.write("[snap] ⑧ 地标(" + label + " " + boxW + "x" + boxH + ")"
+                                                + ": minLum=" + min + " std=" + std
+                                                + (min >= 250 && std <= 2
+                                                        ? "（该区域纯白 → 这块没画出来）" : "（有墨）"));
+                                    } finally {
+                                        shot.recycle();
                                     }
                                 }
-                            }
-                            shot.recycle();
-                            if (count == 0) {
-                                sink.write("[snap] ⑧ 地标(" + tag + "): 采样为空");
-                                return;
-                            }
-                            double mean = sum / (double) count;
-                            double variance = Math.max(0, sumSq / (double) count - mean * mean);
-                            int std = (int) Math.round(Math.sqrt(variance));
-                            sink.write("[snap] ⑧ 地标(" + tag + " " + w + "x" + h + "): minLum=" + min
-                                    + " std=" + std
-                                    + (min >= 250 && std <= 2 ? "（该区域纯白 → 这块没画出来）" : "（有墨）"));
+                            });
                         }
                     }, handler);
         } catch (Exception error) {
-            sink.write("[snap] ⑧ 地标: 解析失败 " + error.getClass().getSimpleName());
+            sink.write("[snap] ⑧ 地标(" + tag + "): 解析失败 " + error.getClass().getSimpleName());
         }
     }
 

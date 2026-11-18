@@ -1,5 +1,45 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.12（白屏根因、分支导入、回车设置、日志完善）
+
+### 白屏（真因已在真机日志上闭环）
+
+- **根因**：`height: var(--app-viewport-height, 100dvh)`。`var()` 的替换在计算值阶段发生，
+  引擎不支持 `dvh` 时整条声明「计算值阶段无效」，`height` 取初始值 `auto` —— **不会回退到上一条 `100vh` 声明**。
+  `.frame` 是 `position:fixed; bottom:auto; overflow:hidden`，`auto` 高度塌成 0，内容被整块裁掉；
+  设置弹窗走 portal 挂在 `body` 上不受裁剪，于是出现「弹窗看得见、底层全白、关掉弹窗全白」
+- **最小实验**：`height:123px; height:var(--x,100furlong)` 计算结果是 **0px**（123px 被丢弃）；
+  只有把不支持的单位直接写在属性上（非 `var`）才会回退
+- **修法**：`100vh` 保留，`dvh` 版本挪进 `@supports (height: 100dvh)`；同样写法在
+  `ChatInput.module.css`、`Settings.module.css` 一并修正
+- 撤掉此前所有基于错误判据的自动恢复（`recreate()` 阶梯、`web.onPause()`、`INVISIBLE→VISIBLE` 重挂、`LAYER_TYPE_HARDWARE`）
+
+### 回车键行为可设置
+
+- 设置里可选「回车发送」或「回车换行」，`Ctrl/⌘+Enter` 始终发送
+- 中文输入法选词不再误发送：`isComposing` + `keyCode 229` 双重判断
+
+### 导入官方归档保留分叉
+
+- 此前只沿 `current_message_id` 取一条链，**重新生成产生的兄弟消息在导入时就被丢弃**
+- 现在导入全部消息建树：`parentId` 连父子、沿当前路径写 `selectedChildId`、`rootMessageId` 指向路径根
+- 校验：父子角色交替、所有根必须是 USER、id 唯一、无环（迭代标记，非 O(n²)）、深链不递归
+- 缺 `current_message_id` 时按同父最大 id 选当前分支（与官方一致）
+
+### 「发你好回报上传失败」
+
+- 错误按 401/402/413/429/网络细分，不再一律叫「上传失败」
+- 只有真要传附件时才归到上传；无附件时的运行时缺失（方法不存在/不可迭代）才提示运行环境问题
+- Key 校验加 15 秒超时，超时按网络异常提示（此前真机出现 37 秒才报 `Failed to fetch`）
+
+### 运行日志（按诊断方案完善）
+
+- 每条带单调序号 `#seq`，前端段与原生段可对齐
+- 环形缓冲挤出时记 `dropped`，导出文件开头**声明缺口**
+- 异常只记类型名与错误码，不记原文；九宫格只记 `tag.class`，不含元素文本
+- 新增 `DiagnosticSnapshot`：视图链 / 窗口层级 / 兄弟视图 / 绘制计数与 `commitVisible` /
+  自绘非白‰ / PixelCopy 非白‰ / 地标像素 `minLum+std` / `frameRect`
+- 采集约束：主线程只做视图读取，像素统计走后台线程；抓屏限流；`onDestroy` 前 dispose，回调带 `disposed` 检查
 ## 1.2.11（运行日志 + 白屏修复）
 
 ### 运行日志（便于排查）

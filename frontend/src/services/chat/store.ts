@@ -1254,7 +1254,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           logError('chat', 'preparing 阶段失败', {
             kind: error instanceof ApiError ? error.kind : 'unknown',
             status: error instanceof ApiError ? error.status : undefined,
-            message: error instanceof Error ? error.message : String(error),
+            message: errorSummary(error),
             files: request.question.files.length,
           })
           reply = settleReply(reply, 'error', Date.now(), {
@@ -1296,7 +1296,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         } else {
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'protocol',
-            message: error instanceof Error ? error.message : String(error),
+            message: errorSummary(error),
           })
         }
         break

@@ -56,6 +56,8 @@ final class BlankScreenGuard {
     private final Host host;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean busy = new AtomicBoolean(false);
+    /** dispose 之后所有异步回调直接丢弃，绝不再碰已经销毁的 WebView */
+    private volatile boolean disposed = false;
 
     BlankScreenGuard(Activity activity, WebView web, Host host) {
         this.activity = activity;
@@ -78,6 +80,7 @@ final class BlankScreenGuard {
      * 既泄漏旧实例，也让 busy 永远卡在 true。onDestroy 里必须先调用它。
      */
     void dispose() {
+        disposed = true;
         handler.removeCallbacksAndMessages(null);
         busy.set(false);
     }
@@ -111,11 +114,19 @@ final class BlankScreenGuard {
         askTextLength(new TextCallback() {
             @Override
             public void onText(int textLength) {
+                if (disposed) {
+                    busy.set(false);
+                    return;
+                }
                 // 不因「文本少」跳过采样：用户反馈过「连 Key 都填不了」，
                 // 那种空页文本量本来就低，恰恰是最需要读数的时候。
                 sampleScreen(new SampleCallback() {
                     @Override
                     public void onSample(int nonWhitePermille, boolean captureFailed) {
+                        if (disposed) {
+                            busy.set(false);
+                            return;
+                        }
                         int viewPermille = drawProbePermille();
                         busy.set(false);
                         int frames = drawCount;

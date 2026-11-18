@@ -368,65 +368,119 @@ const buildTree = (
       return fail()
     }
   }
-  // 环检测：沿 parent 上溯步数超过消息总数就是环
+
+  // 环检测：迭代标记，每节点最多访问一次（逐节点上溯最坏是 O(n²)）
+  const state = new Map<string, number>()
   for (const message of messages) {
-    let steps = 0
+    if (state.get(message.id) === 2) {
+      continue
+    }
+    const path: string[] = []
     let cursor: RawMessage | undefined = message
-    while (cursor && cursor.parentId !== null) {
-      cursor = byId.get(cursor.parentId)
-      steps += 1
-      if (steps > messages.length) {
+    while (cursor) {
+      const seen = state.get(cursor.id)
+      if (seen === 2) {
+        break
+      }
+      if (seen === 1) {
         return fail()
       }
+      state.set(cursor.id, 1)
+      path.push(cursor.id)
+      const parentId: string | null | undefined = cursor.parentId
+      cursor = parentId === null || parentId === undefined ? undefined : byId.get(parentId)
+    }
+    for (const id of path) {
+      state.set(id, 2)
     }
   }
 
+  // 迭代式拓扑转换：先父后子，深链不会爆栈
+  const childrenOf = new Map<string, RawMessage[]>()
+  const roots: RawMessage[] = []
+  for (const message of messages) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      roots.push(message)
+      continue
+    }
+    const siblings = childrenOf.get(parentId)
+    if (siblings) {
+      siblings.push(message)
+    } else {
+      childrenOf.set(parentId, [message])
+    }
+  }
+  // 所有根都必须是 USER（官方约束），不能只查第一个
+  for (const root of roots) {
+    if (root.role !== 'USER') {
+      return fail()
+    }
+  }
   const converted = new Map<string, Message>()
   const ordered: Message[] = []
-  const visit = (raw: RawMessage): Message => {
-    const ready = converted.get(raw.id)
-    if (ready) {
-      return ready
-    }
-    if (raw.parentId !== null) {
-      const parentRaw = byId.get(raw.parentId) ?? fail()
-      if (parentRaw.role === raw.role) {
+  const queue: RawMessage[] = [...roots]
+  let head = 0
+  while (head < queue.length) {
+    const raw = queue[head]
+    head += 1
+    const parentId = raw.parentId
+    const hasParent = parentId !== null && parentId !== undefined
+    const parent = hasParent ? converted.get(parentId) : undefined
+    if (hasParent) {
+      if (!parent) {
         return fail()
       }
-      const parent = visit(parentRaw)
-      parent.selectedChildId = raw.id
+      if (byId.get(parentId as string)?.role === raw.role) {
+        return fail()
+      }
     }
     const message: Message =
       raw.role === 'USER' ? toUserMessage(raw, mimeTypeOf) : toAssistantMessage(raw)
-    message.parentId = raw.parentId
+    message.parentId = hasParent ? parentId : null
     converted.set(raw.id, message)
     ordered.push(message)
-    return message
+    for (const child of childrenOf.get(raw.id) ?? []) {
+      queue.push(child)
+    }
   }
-  for (const raw of messages) {
-    visit(raw)
-  }
-
-  const root = [...ordered].find((message) => message.parentId === null) ?? fail()
-  if (root.role !== 'user') {
+  if (ordered.length !== messages.length) {
     return fail()
   }
 
+  // 默认选中同父下 id 最大者（与官方一致，不依赖数组顺序）
+  const idValue = (id: string): number => {
+    const parsed = Number(id)
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+  }
+  for (const message of ordered) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      continue
+    }
+    const parent = converted.get(parentId)
+    if (!parent) {
+      return fail()
+    }
+    const selected = parent.selectedChildId
+    if (selected === undefined || idValue(message.id) > idValue(selected)) {
+      parent.selectedChildId = message.id
+    }
+  }
+
+  // 用户停留位置：沿 current_message_id 上溯，覆盖路径上的 selectedChildId
+  const fallbackId = messages[messages.length - 1].id
   const startId =
     typeof currentId === 'number' || typeof currentId === 'string'
       ? String(currentId)
-      : messages[messages.length - 1].id
+      : converted.has(fallbackId)
+        ? fallbackId
+        : (roots[0]?.id ?? '')
   let cursor: Message = converted.get(startId) ?? fail()
-  if (!cursor) {
-    return fail()
-  }
-  // 当前消息是用户停留位置，其后即使还有消息也不沿它展开
   cursor.selectedChildId = undefined
   const pathSeen = new Set<string>()
   for (;;) {
-    // 先取 parentId：cursor 在循环里会被重新赋值，直接读 cursor.parentId 会丢类型收窄
-    const parentId = cursor.parentId
-    // 本地类型是 parentId?: string | null，undefined 与 null 都表示「没有父」
+      const parentId: string | null | undefined = cursor.parentId
     if (parentId === null || parentId === undefined) {
       break
     }

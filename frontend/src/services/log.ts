@@ -89,7 +89,11 @@ const push = (level: LogLevel, scope: string, message: string, detail?: unknown)
   const bridge = (window as { __deepsleepNative?: { appendLog?: (line: string) => void } })
     .__deepsleepNative
   if (bridge?.appendLog) {
-    bridge.appendLog(`${new Date(entry.at).toISOString()} ${level.toUpperCase()} [${scope}] ${line}`)
+    // 原生落盘也带序号，导出后前端段与原生段能按 #seq 对齐
+    bridge.appendLog(
+      `${new Date(entry.at).toISOString()} #${String(entry.seq).padStart(4, '0')} ` +
+        `${level.toUpperCase()} [${scope}] ${line}`
+    )
   }
 }
 

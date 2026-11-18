@@ -38,7 +38,8 @@ export const classifyApiError = (error: unknown): ApiErrorCondition => {
     return 'other'
   }
   if (error.status === undefined) {
-    // 超时与断网对用户是同一件事：都提示检查网络\n  return error.kind === 'network' || error.kind === 'timeout' ? 'network' : 'other'
+    // 超时与断网对用户是同一件事：都提示检查网络
+    return error.kind === 'network' || error.kind === 'timeout' ? 'network' : 'other'
   }
   return classifyStatus(error.status)
 }

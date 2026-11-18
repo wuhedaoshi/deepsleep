@@ -71,6 +71,8 @@ public class MainActivity extends Activity {
     private Object nativeBridge;
     /** 白屏诊断与自动恢复 */
     private BlankScreenGuard blankGuard;
+    /** 渲染进程重建次数：只在本进程内累计，页面正常加载后归零（不能持久化，否则装一次就永久用完） */
+    private int rendererRebuilds = 0;
     /** 一次性诊断快照（白屏定案用） */
     private DiagnosticSnapshot snapshot;
 
@@ -253,14 +255,12 @@ public class MainActivity extends Activity {
                     view.destroy();
                 }
                 // 渲染进程反复死的时候不能无限重建：一个进程内最多重建 2 次
-                int rebuilds = getPreferences(android.content.Context.MODE_PRIVATE)
-                        .getInt("renderer.rebuilds", 0);
+                int rebuilds = rendererRebuilds;
                 if (rebuilds >= 2) {
                     logNative("renderer 连续被杀 " + rebuilds + " 次，停止重建");
                     return false;
                 }
-                getPreferences(android.content.Context.MODE_PRIVATE).edit()
-                        .putInt("renderer.rebuilds", rebuilds + 1).apply();
+                rendererRebuilds = rebuilds + 1;
                 recreate();
                 return true;
             }
@@ -293,6 +293,8 @@ public class MainActivity extends Activity {
                     blankGuard.probe("page-finished");
                 }
                 if (snapshot != null) {
+                // 页面正常加载过就说明渲染进程是健康的，计数归零
+                rendererRebuilds = 0;
                     snapshot.notePageFinished(url);
                     for (long delay : new long[]{500L, 2000L, 5000L}) {
                         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
@@ -767,6 +769,10 @@ public class MainActivity extends Activity {
         archiveWriter = null;
         deleteArchiveDocument(partial);
         // 先取消守卫的延迟采样：否则回调会落在已销毁的 WebView 上（泄漏 + busy 卡死）
+        if (snapshot != null) {
+            snapshot.dispose();
+            snapshot = null;
+        }
         if (blankGuard != null) {
             blankGuard.dispose();
             blankGuard = null;
