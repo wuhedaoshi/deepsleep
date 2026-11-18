@@ -16,6 +16,8 @@ export type LogLevel = 'info' | 'warn' | 'error'
 export type LogEntry = {
   /** 毫秒时间戳 */
   at: number
+  /** 单调序号（本次启动内递增），用于把前后端事件对齐 */
+  seq: number
   level: LogLevel
   /** 分类，便于过滤：boot / import / export / chat / compaction / media / ui */
   scope: string
@@ -67,13 +69,21 @@ const formatValue = (value: unknown): string => {
   }
 }
 
+/** 单调序号：前后端事件靠它对齐时间线（GPT 方案里的 seq） */
+let nextSeq = 1
+/** 环形缓冲挤出多少条：导出时要如实声明缺口，而不是装作完整 */
+let dropped = 0
+
 const push = (level: LogLevel, scope: string, message: string, detail?: unknown) => {
   const extra = formatValue(detail)
   const line = redact(extra === '' ? message : `${message} | ${extra}`)
-  const entry: LogEntry = { at: Date.now(), level, scope, message: line }
+  const entry: LogEntry = { at: Date.now(), seq: nextSeq, level, scope, message: line }
+  nextSeq += 1
   entries.push(entry)
   if (entries.length > MAX_ENTRIES) {
-    entries.splice(0, entries.length - MAX_ENTRIES)
+    const removed = entries.length - MAX_ENTRIES
+    entries.splice(0, removed)
+    dropped += removed
   }
   // 原生侧同时落盘：Android 上写到 Android/data/<pkg>/files/logs，用户能自己翻
   const bridge = (window as { __deepsleepNative?: { appendLog?: (line: string) => void } })
@@ -90,10 +100,18 @@ export const logError = (scope: string, message: string, detail?: unknown) => pu
 export const getLogEntries = (): readonly LogEntry[] => entries
 
 /** 导出用的纯文本：一行一条，带 ISO 时间，方便贴到群里或 issue 里 */
-export const formatLog = (list: readonly LogEntry[] = entries): string =>
-  list
-    .map((entry) => `${new Date(entry.at).toISOString()} ${entry.level.toUpperCase()} [${entry.scope}] ${entry.message}`)
+export const formatLog = (list: readonly LogEntry[] = entries): string => {
+  const body = list
+    .map(
+      (entry) =>
+        `${new Date(entry.at).toISOString()} #${String(entry.seq).padStart(4, '0')} ` +
+        `${entry.level.toUpperCase()} [${entry.scope}] ${entry.message}`
+    )
     .join('\n')
+  // 缺口必须写出来：没有就说没有，比假装完整有用
+  const gap = dropped === 0 ? '' : `\n# 缺口：环形缓冲已丢弃 ${dropped} 条更早的记录\n`
+  return gap + body
+}
 
 export const clearLog = () => {
   entries.length = 0

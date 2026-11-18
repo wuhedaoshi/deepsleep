@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { errorSummary } from '../services/log.js'
 import { copyText } from '../services/clipboard.js'
 import { formatLog, getLogEntries, logError } from '../services/log.js'
 import { exportLog } from '../services/logExport.js'
@@ -45,7 +46,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       const path = await exportLog()
       this.setState({ saved: path === '' ? '已下载' : path })
     } catch (error) {
-      logError('log', '导出日志失败', error)
+      logError('log', '导出日志失败', errorSummary(error))
       this.setState({ saved: '导出失败' })
     }
   }

@@ -15,7 +15,7 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { isRiskyImageType } from '../images.js'
-import { logError, logInfo } from '../log.js'
+import { errorSummary, logError, logInfo } from '../log.js'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
@@ -335,7 +335,7 @@ export const initChat = (): Promise<void> => {
       }
     } catch (error) {
       if (epoch === historyEpoch) {
-        logError('boot', 'initChat 失败', error)
+        logError('boot', 'initChat 失败', errorSummary(error))
         set({ initError: true })
         db.reportStorageError('read local sessions')(error)
       }
