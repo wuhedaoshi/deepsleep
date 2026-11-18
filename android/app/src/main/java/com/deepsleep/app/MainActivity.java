@@ -69,10 +69,18 @@ public class MainActivity extends Activity {
     private WebView web;
     /** 强引用 JS 桥对象：只被行内表达式引用的话，GC 之后桥就失效了（见 addJavascriptInterface 处的注释）。 */
     private Object nativeBridge;
+    /** 白屏诊断与自动恢复 */
+    private BlankScreenGuard blankGuard;
 
-    /** 供 BlankScreenGuard 等辅助类写日志 */
-    static void logFromGuard(String line) {
+    /**
+     * 供 BlankScreenGuard 等辅助类写日志。
+     *
+     * 之前这里只打 Log.i、不进日志文件，结果白屏守卫的判断在导出日志里完全看不到，
+     * 排查等于盲飞——所以必须同时落盘。
+     */
+    void logFromGuard(String line) {
         android.util.Log.i(TAG, line);
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [blank] " + line);
     }
 
     // ---- 运行日志：前端把已脱敏的行交过来，这里顺序写到外部私有目录（用户能翻到） ----
@@ -187,7 +195,12 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(Color.WHITE);
         // 不额外加硬件层：LAYER_TYPE_HARDWARE 只是多套一层离屏缓冲，不是「让它画出来」的开关，
         // 反而可能是白屏的诱因之一。白屏由 BlankScreenGuard 实测后按阶梯恢复。
-        web.setLayerType(View.LAYER_TYPE_NONE, null);
+        // 上次验证过「软件层可用」就直接用它，免得再白一次再自愈
+        BlankScreenGuard.applyPersistedMode(web, this);
+        if (web.getLayerType() == View.LAYER_TYPE_NONE) {
+            // 没有历史结论时保持默认（不额外套硬件层）
+            web.setLayerType(View.LAYER_TYPE_NONE, null);
+        }
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -239,6 +252,9 @@ public class MainActivity extends Activity {
                 // 与 JS 的 [boot] 打点对照：能判断白屏是「页面没加载出来」还是「加载了但脚本挂了」
                 appendLogLine(new java.util.Date().toInstant().toString()
                         + " INFO [native] onPageFinished " + url);
+                if (blankGuard != null) {
+                    blankGuard.verify("page-finished");
+                }
             }
 
             @Override
@@ -476,6 +492,18 @@ public class MainActivity extends Activity {
             }
         };
         web.addJavascriptInterface(nativeBridge, "__deepsleepNative");
+        blankGuard = new BlankScreenGuard(this, web, new BlankScreenGuard.Host() {
+            @Override
+            public void onNeedRebuild() {
+                logFromGuard("白屏恢复：重建界面");
+                recreate();
+            }
+
+            @Override
+            public void log(String line) {
+                logFromGuard(line);
+            }
+        });
         setContentView(web);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -632,6 +660,9 @@ public class MainActivity extends Activity {
         }
         web.onResume();
         web.resumeTimers();
+        if (blankGuard != null) {
+            blankGuard.verify("resume");
+        }
         web.invalidate();
         if (!stoppedOnce) {
             return;
