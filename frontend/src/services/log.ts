@@ -112,6 +112,9 @@ export const describeEnvironment = () => {
     viewport: `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}x`,
     storage: navigator.storage ? 'yes' : 'no',
     native: bridge ? 'yes' : 'no',
+    // 旧 WebView 上补了哪些 API（见 index.html 的垫片）；空数组表示引擎本身就支持
+    shims:
+      (window as { __deepsleepShims?: () => string[] }).__deepsleepShims?.().join(',') ?? '',
   }
 }
 
