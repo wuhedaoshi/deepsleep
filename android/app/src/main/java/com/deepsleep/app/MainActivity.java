@@ -195,12 +195,8 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(Color.WHITE);
         // 不额外加硬件层：LAYER_TYPE_HARDWARE 只是多套一层离屏缓冲，不是「让它画出来」的开关，
         // 反而可能是白屏的诱因之一。白屏由 BlankScreenGuard 实测后按阶梯恢复。
-        // 上次验证过「软件层可用」就直接用它，免得再白一次再自愈
-        BlankScreenGuard.applyPersistedMode(web, this);
-        if (web.getLayerType() == View.LAYER_TYPE_NONE) {
-            // 没有历史结论时保持默认（不额外套硬件层）
-            web.setLayerType(View.LAYER_TYPE_NONE, null);
-        }
+        // 保持默认绘制路径；不根据历史结论强制软件层（会让正常机器的滚动变慢）
+        web.setLayerType(View.LAYER_TYPE_NONE, null);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -253,7 +249,7 @@ public class MainActivity extends Activity {
                 appendLogLine(new java.util.Date().toInstant().toString()
                         + " INFO [native] onPageFinished " + url);
                 if (blankGuard != null) {
-                    blankGuard.verify("page-finished");
+                    blankGuard.probe("page-finished");
                 }
             }
 
@@ -492,13 +488,9 @@ public class MainActivity extends Activity {
             }
         };
         web.addJavascriptInterface(nativeBridge, "__deepsleepNative");
+        // 守卫只做观测：不切绘制路径、不 recreate。上一版会自动恢复，
+        // 在浅色主题（本来就是白底）上被误判成白屏，导致 recreate 无限循环。
         blankGuard = new BlankScreenGuard(this, web, new BlankScreenGuard.Host() {
-            @Override
-            public void onNeedRebuild() {
-                logFromGuard("白屏恢复：重建界面");
-                recreate();
-            }
-
             @Override
             public void log(String line) {
                 logFromGuard(line);
@@ -661,25 +653,15 @@ public class MainActivity extends Activity {
         web.onResume();
         web.resumeTimers();
         if (blankGuard != null) {
-            blankGuard.verify("resume");
+            blankGuard.probe("resume");
         }
         web.invalidate();
         if (!stoppedOnce) {
             return;
         }
+        // 不再做「隐藏→显示」的重挂：那是闪屏的直接来源，而且对白屏没起作用。
         stoppedOnce = false;
-        web.setVisibility(View.INVISIBLE);
-        web.post(new Runnable() {
-            @Override
-            public void run() {
-                if (web != null) {
-                    web.setVisibility(View.VISIBLE);
-                    web.invalidate();
-                }
-                appendLogLine(new java.util.Date().toInstant().toString()
-                        + " INFO [native] 回前台重新挂载 WebView");
-            }
-        });
+        web.invalidate();
     }
 
     @Override
