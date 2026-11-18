@@ -991,7 +991,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   const pending = new Map<string, FileAttachment>()
-  for (const [user] of getContextRounds(request.history).toReversed()) {
+  for (const [user] of [...getContextRounds(request.history)].reverse()) {
     for (const file of user.files) {
       if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
         pending.set(file.id, file)
@@ -1240,7 +1240,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'upload',
             message: '',
-            localMessage: describeUploadError(error),
+            // files===0 还在这里抛错，说明不是附件问题（实测是 WebView 缺 API，
+            // 例如 toReversed）。别把它说成「上传失败」，直接指出运行环境。
+            localMessage:
+              request.question.files.length === 0 && error instanceof TypeError
+                ? { key: 'sendFailedWebView' }
+                : describeUploadError(error),
             retryable: isRetryableApiError(error),
           })
           break

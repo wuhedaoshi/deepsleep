@@ -29,11 +29,13 @@
           return patched
         }
 
-        function define(target, name, value) {
+        function define(target, name, value, label) {
           if (typeof target[name] === 'function') {
             return
           }
-          patched.push(name)
+          var host =
+            target === Array.prototype ? 'Array' : target === String.prototype ? 'String' : ''
+          patched.push(host ? host + '.' + name : label || name)
           Object.defineProperty(target, name, {
             value: value,
             writable: true,
@@ -42,13 +44,13 @@
         }
 
         // Chrome 92+
-        define(Array.prototype, 'at', function at(index) {
+        define(Array.prototype, 'at', function arrayAt(index) {
           var length = this.length >>> 0
           var offset = Math.trunc(Number(index)) || 0
           if (offset < 0) offset += length
           return offset < 0 || offset >= length ? undefined : this[offset]
         })
-        define(String.prototype, 'at', function at(index) {
+        define(String.prototype, 'at', function stringAt(index) {
           var length = this.length >>> 0
           var offset = Math.trunc(Number(index)) || 0
           if (offset < 0) offset += length
@@ -76,6 +78,20 @@
           }
           return -1
         })
+
+        // Chrome 100+：发送路径会用 signal.throwIfAborted()；老 WebView 没有它就抛 TypeError
+        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.prototype.throwIfAborted !== 'function') {
+          patched.push('AbortSignal.throwIfAborted')
+          Object.defineProperty(AbortSignal.prototype, 'throwIfAborted', {
+            value: function throwIfAborted() {
+              if (this.aborted) {
+                throw this.reason
+              }
+            },
+            writable: true,
+            configurable: true,
+          })
+        }
 
         // Chrome 110+（响应式数组方法）
         define(Array.prototype, 'toReversed', function toReversed() {

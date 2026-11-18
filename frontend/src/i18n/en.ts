@@ -163,6 +163,7 @@ export const en = {
   apiKeyPlaceholder: 'Enter API Key',
   apiKeyVerifying: 'Verifying...',
   confirm: 'Confirm',
+  sendFailedWebView: 'Send failed: your Android System WebView is too old (missing a required JS method). Update it in the app store and retry.',
   apiKeyInvalid: 'Invalid API Key. Please check it and try again.',
   apiKeyVerificationFailed: 'Verification failed: {message}',
   historyImport: 'Import chat history',
