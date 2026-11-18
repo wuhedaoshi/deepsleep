@@ -178,7 +178,15 @@ final class BlankScreenGuard {
         web.getLocationInWindow(location);
         int width = Math.max(1, web.getWidth());
         int height = Math.max(1, web.getHeight());
-        final Bitmap shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        final Bitmap shot;
+        try {
+            shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        } catch (Throwable error) {
+            // 低内存时这里可能直接 OOM：不能让整个应用跟着崩
+            busy.set(false);
+            host.log("probe: 抓屏位图分配失败 " + error.getClass().getSimpleName());
+            return;
+        }
         try {
             PixelCopy.request(activity.getWindow(),
                     new android.graphics.Rect(location[0], location[1],

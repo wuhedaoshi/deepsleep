@@ -176,7 +176,8 @@ export const installLogHandlers = () => {
   const originalError = console.error
   // eslint-disable-next-line no-console
   console.error = (...args: unknown[]) => {
-    push('error', 'console', args.map((item) => formatValue(item)).join(' '))
+    // console.error 的参数里可能有原始异常或用户数据：只记类型与白名单摘要
+    push('error', 'console', args.map((item) => summarizeConsoleArg(item)).join(' '))
     originalError.apply(console, args)
   }
 }
@@ -341,4 +342,23 @@ export const errorSummary = (error: unknown): string => {
     return code === '' ? name : `${name}:${code}`
   }
   return typeof error === 'string' ? 'string' : typeof error
+}
+/**
+ * console.error 的参数摘要。
+ *
+ * 接管 console.error 是为了留下痕迹，但参数里可能是原始 Error（含用户数据）。
+ * 这里只保留类型名与原始值类型，不落原文。
+ */
+const summarizeConsoleArg = (value: unknown): string => {
+  if (value instanceof Error) {
+    return errorSummary(value)
+  }
+  if (typeof value === 'string') {
+    // 字符串可能是任意内容，只记长度
+    return `string(${value.length})`
+  }
+  if (typeof value === 'object' && value !== null) {
+    return `object(${Object.keys(value as Record<string, unknown>).slice(0, 4).join(',')})`
+  }
+  return typeof value
 }

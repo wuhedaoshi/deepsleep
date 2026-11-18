@@ -601,7 +601,8 @@ const compareIds = (left: string, right: string): number => {
     return left < right ? -1 : left > right ? 1 : 0
   }
   if (/^\d+$/.test(left) !== /^\d+$/.test(right)) {
-    return left.startsWith('') ? 1 : -1
+    // 数字 id 排在非数字之后（正反必须对称，否则比较结果随机）
+    return /^\d+$/.test(left) ? 1 : -1
   }
   return left < right ? -1 : left > right ? 1 : 0
 }
