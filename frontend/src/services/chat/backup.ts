@@ -1,5 +1,5 @@
 import { formatDate } from '../../utils/format.js'
-import { logError, logInfo } from '../log.js'
+import { errorSummary, logError, logInfo } from '../log.js'
 import * as db from './db.js'
 import type { ImportOptions, ImportProgress, ImportResult } from './history/importArchive.js'
 import { replaceHistory, replaceHistoryProgressively, useChatStore } from './store.js'
@@ -97,7 +97,7 @@ export const importHistory = (
       )
       return result
     } catch (error) {
-      logError('import', '导入失败', error)
+      logError('import', '导入失败', errorSummary(error))
       throw error
     }
   })

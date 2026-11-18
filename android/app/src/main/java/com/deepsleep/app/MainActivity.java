@@ -69,10 +69,32 @@ public class MainActivity extends Activity {
     private WebView web;
     /** 强引用 JS 桥对象：只被行内表达式引用的话，GC 之后桥就失效了（见 addJavascriptInterface 处的注释）。 */
     private Object nativeBridge;
+    /** 白屏诊断与自动恢复 */
+    private BlankScreenGuard blankGuard;
+    /** 渲染进程重建次数：只在本进程内累计，页面正常加载后归零（不能持久化，否则装一次就永久用完） */
+    private static int rendererRebuilds = 0;
+    /** 一次性诊断快照（白屏定案用） */
+    private DiagnosticSnapshot snapshot;
 
-    /** 供 BlankScreenGuard 等辅助类写日志 */
-    static void logFromGuard(String line) {
+    /** 诊断快照专用：以 [snap] 前缀落盘，便于导出后整段抓取 */
+    void logSnapshot(String line) {
+        appendLogLine(new java.util.Date().toInstant().toString() + " " + line);
+    }
+
+    /** 原生侧自己的日志（本地服务、生命周期等），与守卫的 [blank] 区分开 */
+    void logNative(String line) {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] " + line);
+    }
+
+    /**
+     * 供 BlankScreenGuard 等辅助类写日志。
+     *
+     * 之前这里只打 Log.i、不进日志文件，结果白屏守卫的判断在导出日志里完全看不到，
+     * 排查等于盲飞——所以必须同时落盘。
+     */
+    void logFromGuard(String line) {
         android.util.Log.i(TAG, line);
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [blank] " + line);
     }
 
     // ---- 运行日志：前端把已脱敏的行交过来，这里顺序写到外部私有目录（用户能翻到） ----
@@ -80,8 +102,6 @@ public class MainActivity extends Activity {
     /** 单文件上限；超了滚成 .1，只留一份历史，别把用户空间吃掉 */
     private static final long LOG_MAX_BYTES = 2L * 1024 * 1024;
     private final Object logLock = new Object();
-    /** 是否至少进过后台：只有从后台回来才做重新挂载，避免每次 resume 闪一下 */
-    private boolean stoppedOnce = false;
 
     private File logDir() {
         File base = getExternalFilesDir("logs");
@@ -112,7 +132,16 @@ public class MainActivity extends Activity {
             byte[] buffer = new byte[take];
             raf.seek(length - take);
             raf.readFully(buffer);
-            return new String(buffer, java.nio.charset.StandardCharsets.UTF_8);
+            // 从中间切会劈开多字节字符，导致首行乱码：退到第一个换行之后
+            int offset = 0;
+            while (offset < take - 1 && !(buffer[offset] == '\n')) {
+                offset += 1;
+            }
+            if (offset >= take - 1) {
+                offset = 0;
+            }
+            return new String(buffer, offset, take - offset,
+                    java.nio.charset.StandardCharsets.UTF_8);
         } catch (IOException error) {
             Log.w(TAG, "readLogTail failed: " + error.getMessage());
             return "";
@@ -186,7 +215,8 @@ public class MainActivity extends Activity {
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
         // 不额外加硬件层：LAYER_TYPE_HARDWARE 只是多套一层离屏缓冲，不是「让它画出来」的开关，
-        // 反而可能是白屏的诱因之一。白屏由 BlankScreenGuard 实测后按阶梯恢复。
+        // 反而可能是白屏的诱因之一。BlankScreenGuard 目前只采样写日志，不做自动恢复。
+        // 保持默认绘制路径；不根据历史结论强制软件层（会让正常机器的滚动变慢）
         web.setLayerType(View.LAYER_TYPE_NONE, null);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -207,7 +237,11 @@ public class MainActivity extends Activity {
              */
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-        appendLogLine(new java.util.Date().toInstant().toString() + " ERROR [native] renderer 被杀（多半是内存不足），重建界面");
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " ERROR [native] renderer 被杀 didCrash=" + detail.didCrash());
+                if (snapshot != null) {
+                    snapshot.noteRendererGone(detail.didCrash());
+                }
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                     return false;
                 }
@@ -220,6 +254,13 @@ public class MainActivity extends Activity {
                     }
                     view.destroy();
                 }
+                // 渲染进程反复死的时候不能无限重建：一个进程内最多重建 2 次
+                int rebuilds = rendererRebuilds;
+                if (rebuilds >= 2) {
+                    logNative("renderer 连续被杀 " + rebuilds + " 次，停止重建");
+                    return false;
+                }
+                rendererRebuilds = rebuilds + 1;
                 recreate();
                 return true;
             }
@@ -235,10 +276,37 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                appendLogLine(new java.util.Date().toInstant().toString()
+                        + " INFO [native] onPageCommitVisible " + url);
+                if (snapshot != null) {
+                    snapshot.noteCommitVisible();
+                }
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 // 与 JS 的 [boot] 打点对照：能判断白屏是「页面没加载出来」还是「加载了但脚本挂了」
                 appendLogLine(new java.util.Date().toInstant().toString()
                         + " INFO [native] onPageFinished " + url);
+                if (blankGuard != null) {
+                    blankGuard.probe("page-finished");
+                }
+                if (snapshot != null) {
+                // 页面正常加载过就说明渲染进程是健康的，计数归零
+                rendererRebuilds = 0;
+                    snapshot.notePageFinished(url);
+                    for (long delay : new long[]{500L, 2000L, 5000L}) {
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (snapshot != null) {
+                                    snapshot.capture("after-load");
+                                }
+                            }
+                        }, delay);
+                    }
+                }
             }
 
             @Override
@@ -442,6 +510,12 @@ public class MainActivity extends Activity {
                     return false;
                 }
                 try {
+                    // 先确认拿得到剪贴板服务，拿不到就别谎报成功
+                    android.content.ClipboardManager probe =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (probe == null) {
+                        return false;
+                    }
                     final String value = text;
                     runOnUiThread(new Runnable() {
                         @Override
@@ -476,7 +550,27 @@ public class MainActivity extends Activity {
             }
         };
         web.addJavascriptInterface(nativeBridge, "__deepsleepNative");
+        // 守卫只做观测：不切绘制路径、不 recreate。上一版会自动恢复，
+        // 在浅色主题（本来就是白底）上被误判成白屏，导致 recreate 无限循环。
+        blankGuard = new BlankScreenGuard(this, web, new BlankScreenGuard.Host() {
+            @Override
+            public void log(String line) {
+                logFromGuard(line);
+            }
+        });
         setContentView(web);
+        blankGuard.attachDrawListener();
+        snapshot = new DiagnosticSnapshot(this, web, new DiagnosticSnapshot.Sink() {
+            @Override
+            public void write(String block) {
+                for (String line : block.split("\n")) {
+                    if (!line.isEmpty()) {
+                        logSnapshot(line);
+                    }
+                }
+            }
+        });
+        snapshot.attachListeners();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);
@@ -602,16 +696,17 @@ public class MainActivity extends Activity {
 
     /**
      * 生命周期留痕 + 回前台时重新挂载 WebView。
-     * 为什么需要重新挂载：Honor/MagicOS 上从后台回来，WebView 的绘制缓冲会丢，
-     * DOM 和布局都正常（日志里 bodyText 有内容）但屏幕整片白，重新 attach 才会重画。
+     * 注意：早期版本在回前台时做过「隐藏→显示」重挂，那是闪屏的直接来源且对白屏无效，已删除；
+     * 现在回前台只 invalidate。
      */
     @Override
     protected void onPause() {
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause"
+                + " hasFocus=" + hasWindowFocus() + " webViewShown=" + (web != null && web.isShown()));
+        if (snapshot != null) {
+            snapshot.capture("pause");
+        }
         if (web != null) {
-            // 让 WebView 自己也暂停：部分 OEM WebView（Honor/MagicOS 实测）只靠 Activity
-            // 的生命周期不会停合成器，回来之后 surface 是空的，看起来就是整片白。
-            web.onPause();
         }
         super.onPause();
     }
@@ -619,7 +714,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onStop");
-        stoppedOnce = true;
         super.onStop();
     }
 
@@ -630,25 +724,16 @@ public class MainActivity extends Activity {
         if (web == null) {
             return;
         }
-        web.onResume();
         web.resumeTimers();
-        web.invalidate();
-        if (!stoppedOnce) {
-            return;
+        if (blankGuard != null) {
+            blankGuard.probe("resume");
+        if (snapshot != null) {
+            snapshot.capture("resume");
         }
-        stoppedOnce = false;
-        web.setVisibility(View.INVISIBLE);
-        web.post(new Runnable() {
-            @Override
-            public void run() {
-                if (web != null) {
-                    web.setVisibility(View.VISIBLE);
-                    web.invalidate();
-                }
-                appendLogLine(new java.util.Date().toInstant().toString()
-                        + " INFO [native] 回前台重新挂载 WebView");
-            }
-        });
+        }
+        web.invalidate();
+        // 不再做「隐藏→显示」的重挂：那是闪屏的直接来源，而且对白屏没起作用。
+        web.invalidate();
     }
 
     @Override
@@ -662,6 +747,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        // 记录销毁原因：recreate 循环的现场全靠这行区分
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " INFO [native] onDestroy isFinishing=" + isFinishing());
         Uri partial = null;
         synchronized (archiveLock) {
             if (archiveState != ARCHIVE_IDLE) {
@@ -680,6 +768,15 @@ public class MainActivity extends Activity {
         archiveStopping = true;
         archiveWriter = null;
         deleteArchiveDocument(partial);
+        // 先取消守卫的延迟采样：否则回调会落在已销毁的 WebView 上（泄漏 + busy 卡死）
+        if (snapshot != null) {
+            snapshot.dispose();
+            snapshot = null;
+        }
+        if (blankGuard != null) {
+            blankGuard.dispose();
+            blankGuard = null;
+        }
         // WebView 必须显式销毁：否则它的渲染线程与 Context 会跟着泄漏，
         // 多次重建后容易表现为「页面在、画面空」。
         if (web != null) {
@@ -1013,7 +1110,7 @@ public class MainActivity extends Activity {
     private void startServer() {
         synchronized (MainActivity.class) {
             if (serverStarted) {
-                logFromGuard("本地服务已在运行，跳过重复启动");
+                logNative("本地服务已在运行，跳过重复启动");
                 return;
             }
             serverStarted = true;
@@ -1032,8 +1129,12 @@ public class MainActivity extends Activity {
                         }).start();
                     }
                 } catch (IOException error) {
-                    // 端口被占（上一次进程没退干净）时不再静默：留一行给诊断
-                    logFromGuard("本地服务启动失败：" + error.getMessage());
+                    // 端口被占（上一次进程没退干净）时不再静默：留一行给诊断，
+                    // 并且复位标志——否则这次失败会让以后每次重建都跳过启动，等于没有服务
+                    synchronized (MainActivity.class) {
+                        serverStarted = false;
+                    }
+                    logNative("本地服务启动失败：" + error.getMessage());
                 }
             }
         });

@@ -23,6 +23,8 @@ export type ApiErrorKind =
   | 'stream'
   /** 请求没有到达服务端（断网、跨域被拦截等） */
   | 'network'
+  /** 请求发出但在超时时间内没有响应 */
+  | 'timeout'
   /** 流在 message_stop 之前结束 */
   | 'interrupted'
   /** 响应不符合协议（如非 SSE 响应） */
@@ -90,12 +92,31 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
 })
 
 /** 用 GET /models 校验 API Key（不产生费用） */
+/** 校验 Key 的超时：真机上出现过 37 秒才报 Failed to fetch，用户一直盯着「验证中…」 */
+const VERIFY_TIMEOUT_MS = 15_000
+
 export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal,
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS)
+  // 外部传入的取消信号也要能打断这次校验
+  const forwardAbort = () => controller.abort()
+  signal?.addEventListener('abort', forwardAbort, { once: true })
+  try {
+    await request(`${API_ORIGIN}/models`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    })
+  } catch (error) {
+    // 超时被 abort：给一个说得清的错，而不是裸的 AbortError
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new ApiError('timeout', 'verify timed out')
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', forwardAbort)
+  }
 }
 
 /**

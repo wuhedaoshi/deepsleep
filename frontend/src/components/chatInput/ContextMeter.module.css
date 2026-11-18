@@ -11,22 +11,6 @@
   cursor: default;
 }
 
-/* 环本身当按钮用：只去掉 button 的默认外观，padding / 字号 / 圆角沿用 .meter，尺寸不变。
-   注意别写 `font: inherit`——它排在 .meter 之后，会把 12px 字号与 18px 行高覆盖成继承值，
-   环就会比原来大一截。这里只补 .meter 没声明的 font-family。 */
-.pressable {
-  border: 0;
-  background: transparent;
-  font-family: inherit;
-  appearance: none;
-  cursor: pointer;
-}
-
-.pressable:hover,
-.pressable:focus-visible {
-  color: var(--text-secondary, #6b7280);
-}
-
 .ring {
   width: 13px;
   height: 13px;

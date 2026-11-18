@@ -16,6 +16,8 @@ export type LogLevel = 'info' | 'warn' | 'error'
 export type LogEntry = {
   /** 毫秒时间戳 */
   at: number
+  /** 单调序号（本次启动内递增），用于把前后端事件对齐 */
+  seq: number
   level: LogLevel
   /** 分类，便于过滤：boot / import / export / chat / compaction / media / ui */
   scope: string
@@ -67,19 +69,31 @@ const formatValue = (value: unknown): string => {
   }
 }
 
+/** 单调序号：前后端事件靠它对齐时间线（GPT 方案里的 seq） */
+let nextSeq = 1
+/** 环形缓冲挤出多少条：导出时要如实声明缺口，而不是装作完整 */
+let dropped = 0
+
 const push = (level: LogLevel, scope: string, message: string, detail?: unknown) => {
   const extra = formatValue(detail)
   const line = redact(extra === '' ? message : `${message} | ${extra}`)
-  const entry: LogEntry = { at: Date.now(), level, scope, message: line }
+  const entry: LogEntry = { at: Date.now(), seq: nextSeq, level, scope, message: line }
+  nextSeq += 1
   entries.push(entry)
   if (entries.length > MAX_ENTRIES) {
-    entries.splice(0, entries.length - MAX_ENTRIES)
+    const removed = entries.length - MAX_ENTRIES
+    entries.splice(0, removed)
+    dropped += removed
   }
   // 原生侧同时落盘：Android 上写到 Android/data/<pkg>/files/logs，用户能自己翻
   const bridge = (window as { __deepsleepNative?: { appendLog?: (line: string) => void } })
     .__deepsleepNative
   if (bridge?.appendLog) {
-    bridge.appendLog(`${new Date(entry.at).toISOString()} ${level.toUpperCase()} [${scope}] ${line}`)
+    // 原生落盘也带序号，导出后前端段与原生段能按 #seq 对齐
+    bridge.appendLog(
+      `${new Date(entry.at).toISOString()} #${String(entry.seq).padStart(4, '0')} ` +
+        `${level.toUpperCase()} [${scope}] ${line}`
+    )
   }
 }
 
@@ -90,10 +104,18 @@ export const logError = (scope: string, message: string, detail?: unknown) => pu
 export const getLogEntries = (): readonly LogEntry[] => entries
 
 /** 导出用的纯文本：一行一条，带 ISO 时间，方便贴到群里或 issue 里 */
-export const formatLog = (list: readonly LogEntry[] = entries): string =>
-  list
-    .map((entry) => `${new Date(entry.at).toISOString()} ${entry.level.toUpperCase()} [${entry.scope}] ${entry.message}`)
+export const formatLog = (list: readonly LogEntry[] = entries): string => {
+  const body = list
+    .map(
+      (entry) =>
+        `${new Date(entry.at).toISOString()} #${String(entry.seq).padStart(4, '0')} ` +
+        `${entry.level.toUpperCase()} [${entry.scope}] ${entry.message}`
+    )
     .join('\n')
+  // 缺口必须写出来：没有就说没有，比假装完整有用
+  const gap = dropped === 0 ? '' : `\n# 缺口：环形缓冲已丢弃 ${dropped} 条更早的记录\n`
+  return gap + body
+}
 
 export const clearLog = () => {
   entries.length = 0
@@ -112,6 +134,9 @@ export const describeEnvironment = () => {
     viewport: `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}x`,
     storage: navigator.storage ? 'yes' : 'no',
     native: bridge ? 'yes' : 'no',
+    // 旧 WebView 上补了哪些 API（见 index.html 的垫片）；空数组表示引擎本身就支持
+    shims:
+      (window as { __deepsleepShims?: () => string[] }).__deepsleepShims?.().join(',') ?? '',
   }
 }
 
@@ -132,24 +157,27 @@ export const installLogHandlers = () => {
       push('error', 'window', `资源加载失败：${target.tagName ?? 'unknown'}`)
       return
     }
-    push('error', 'window', event.message || 'uncaught error', {
-      source: event.filename,
-      line: event.lineno,
-      column: event.colno,
-      stack: event.error instanceof Error ? (event.error.stack ?? '').slice(0, 600) : '',
+    push('error', 'window', 'uncaught error', {
+      kind: event.error instanceof Error ? errorSummary(event.error) : 'unknown',
+      frames: (event.error instanceof Error ? (event.error.stack ?? '') : '')
+        .split('\n')
+        .filter((line) => line.includes('/src/'))
+        .map((line) => line.trim().replace(/^at\\s+/, '').slice(0, 80))
+        .slice(0, 5),
     })
   })
   window.addEventListener('unhandledrejection', (event) => {
     // 同时打 console：WebChromeClient 会把 console 转进 logcat，adb 在场时能直接看
     const reason = event.reason
-    push('error', 'promise', 'unhandled rejection', reason instanceof Error ? reason.message : reason)
+    push('error', 'promise', 'unhandled rejection', errorSummary(reason))
   })
   // 这里就是接管 console.error 本身，规则要放行
   // eslint-disable-next-line no-console
   const originalError = console.error
   // eslint-disable-next-line no-console
   console.error = (...args: unknown[]) => {
-    push('error', 'console', args.map((item) => formatValue(item)).join(' '))
+    // console.error 的参数里可能有原始异常或用户数据：只记类型与白名单摘要
+    push('error', 'console', args.map((item) => summarizeConsoleArg(item)).join(' '))
     originalError.apply(console, args)
   }
 }
@@ -252,4 +280,85 @@ export const logSettingsPresence = (tag: string) => {
   } catch (error) {
     push('warn', 'settings', `${tag}: 读本地设置失败`, error)
   }
+}
+/** 记录一次布局几何：区分「没渲染」与「有内容但看不见」 */
+export const logLayout = (tag: string) => {
+  try {
+    const rootElement = document.getElementById('root')
+    const rect = rootElement?.getBoundingClientRect()
+    const body = getComputedStyle(document.body)
+    push('info', 'layout', tag, {
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      visual: `${window.visualViewport?.width ?? 0}x${window.visualViewport?.height ?? 0}`,
+      doc: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+      root: rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : 'none',
+      rootChildren: rootElement?.childElementCount ?? -1,
+      bodyText: (document.body.innerText ?? '').trim().length,
+      bg: body.backgroundColor,
+      color: body.color,
+      dpr: window.devicePixelRatio,
+    })
+  } catch {
+    // 量不出来不影响主流程
+  }
+}
+/**
+ * 九宫格命中测试：把屏幕上 3×3 个点命中的元素标签与文本记下来。
+ *
+ * 用途：白屏时回答「屏幕上到底是不是我们的界面」。原生侧只能量像素，
+ * 分不清「白色的是我们的空态页面」和「白色的是没画出来的表面」。
+ */
+export const logGrid = (tag: string) => {
+  try {
+    const points: string[] = []
+    for (const y of [0.2, 0.5, 0.8]) {
+      for (const x of [0.25, 0.5, 0.75]) {
+        const element = document.elementFromPoint(
+          Math.round(window.innerWidth * x),
+          Math.round(window.innerHeight * y)
+        )
+        if (element === null) {
+          points.push('null')
+          continue
+        }
+        // 只记标签与首个 class：元素文本属于用户内容，不能进日志
+        const className = typeof element.className === 'string' ? element.className : ''
+        points.push(`${element.tagName.toLowerCase()}.${className.split(' ')[0] || '-'}`)
+      }
+    }
+    push('info', 'layout', `grid ${tag}`, { points: points.join(' | ') })
+  } catch {
+    // 量不出来不影响主流程
+  }
+}
+/**
+ * 异常摘要：只留类型名与「像错误码」的片段，不记可能夹带用户数据的原文。
+ * 例：TypeError:r.at is not a function → TypeError（去掉调用现场与参数）
+ */
+export const errorSummary = (error: unknown): string => {
+  if (error instanceof Error) {
+    const name = error.name || 'Error'
+    const code = /^[A-Z_]{3,}$/.exec(error.message)?.[0] ?? ''
+    return code === '' ? name : `${name}:${code}`
+  }
+  return typeof error === 'string' ? 'string' : typeof error
+}
+/**
+ * console.error 的参数摘要。
+ *
+ * 接管 console.error 是为了留下痕迹，但参数里可能是原始 Error（含用户数据）。
+ * 这里只保留类型名与原始值类型，不落原文。
+ */
+const summarizeConsoleArg = (value: unknown): string => {
+  if (value instanceof Error) {
+    return errorSummary(value)
+  }
+  if (typeof value === 'string') {
+    // 字符串可能是任意内容，只记长度
+    return `string(${value.length})`
+  }
+  if (typeof value === 'object' && value !== null) {
+    return `object(${Object.keys(value as Record<string, unknown>).slice(0, 4).join(',')})`
+  }
+  return typeof value
 }

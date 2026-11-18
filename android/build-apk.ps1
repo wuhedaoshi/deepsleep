@@ -30,12 +30,6 @@ $wrapperBat = Join-Path $PSScriptRoot 'gradlew.bat'
 $gradle = if ($env:DEEPSLEEP_GRADLE) { $env:DEEPSLEEP_GRADLE } elseif (Test-Path $wrapperBat) { $wrapperBat } else { Join-Path $toolchain 'gradle-8.7\bin\gradle.bat' }
 $keystore = if ($env:DEEPSLEEP_KEYSTORE) { $env:DEEPSLEEP_KEYSTORE } else { Join-Path $PSScriptRoot '..\keystore\deepsleep.keystore' }
 
-# dist 是跨分支共享的：切分支后必须先在 frontend 里 pnpm build，否则会把上一份产物打进包里。
-$distMain = Get-ChildItem (Join-Path $dist 'static\js') -Filter 'main.*.js' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($distMain) {
-    Write-Host ("[dist] {0}  产出于 {1}" -f $distMain.Name, $distMain.LastWriteTime.ToString('MM-dd HH:mm'))
-}
-
 $missing = @()
 foreach ($path in @($jdk, $sdk, $gradle, $dist, $keystore)) {
     if (-not (Test-Path $path)) { $missing += $path }
@@ -48,7 +42,9 @@ if ($missing.Count -gt 0) {
     }
 }
 
-# 1) 版本号 +1：versionCode +1；versionName 补丁位 +1，满 9 进一位（1.0.9 → 1.1.0，1.9.9 → 2.0.0）
+# 1) 版本号 +1：versionCode +1；versionName 补丁位 +1。
+#    这里**不做「满 9 进一」**——那套规则会把 1.2.9 滚成 1.3.0，两条分支的版本名就撞了。
+#    versionName 只给人看，补丁位涨到两位数（1.2.10）完全正常。
 $props = 'version.properties'
 $lines = Get-Content -LiteralPath $props
 $codeLine = $lines | Where-Object { $_ -match '^versionCode=' } | Select-Object -First 1
@@ -62,7 +58,6 @@ if ($parts.Count -lt 3) { throw "versionName 需要三段式 x.y.z，实际：$n
 $major = [int]$parts[0]
 $minor = [int]$parts[1]
 $patch = [int]$parts[2] + 1
-# 补丁位直接 +1，不再「满 9 进一」：那套规则会把 1.2.9 滚成 1.3.0，两条分支的版本名就撞了。
 $newName = "$major.$minor.$patch"
 $newCode = $code + 1
 

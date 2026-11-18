@@ -13,11 +13,11 @@
 
 | 线 | 版本 | 说明 |
 |---|---|---|
-| **稳定线** | `1.2.11` | 贴近原版 DeepSeek App：只保留官方格式导入导出、大包导入、本地历史，不含魔改功能。**推荐先装这个。** |
+| **稳定线** | `1.2.11` | 贴近原版 DeepSeek App：官方格式导入导出、大包导入、本地历史，不含上下文压缩。**推荐先装这个。** |
 | **实验线** | `1.3.13` | 在稳定线基础上加上下文压缩（自动 + `/compact`）等魔改，行为可能继续调整。 |
 
 两条线共用同一个包名与签名（`com.deepsleep.app`），可以互相覆盖安装、数据自动继承；
-`versionCode` 只能往上走，从实验线回稳定线需要装更高号的稳定线包。
+`versionCode` 只能往上走。
 ## 它能做什么
 
 | 能力 | 说明 |
@@ -25,22 +25,9 @@
 | 完整对话历史在本地 | IndexedDB 存储，图片原件一起落盘；换机时导出 ZIP 带走 |
 | **兼容官方导出格式** | 导出的是官方 `export_format_version: 3` 归档，网页版与官方客户端可直接导入；也能导入它们的导出 |
 | 大包导入 | 300 MB+ / 上千条图片的归档按会话渐进写入，中断后已导入的部分仍可用 |
-| 上下文压缩 | 照 DeepSeek Harness 官方压缩机制：接近窗口上限时把较早的历史摘要成结构化 checkpoint，近期逐字保留；也支持手动（点用量环或发 `/compact`） |
 | 深色 / 多语言 / 语音朗读 | 跟随系统主题，简体中文与英文，Web Speech + 服务端 TTS |
-| 运行日志 | 事件与计数（启动、导入进度、请求状态、错误摘要），**不含对话正文与 API Key**；设置 → 数据管理 → 运行日志可查看/导出；文件在 `Android/data/com.deepsleep.app/files/logs/deepsleep.log`，单文件 2 MB 封顶并保留一份 `.1` 滚动 |
+| 运行日志 | 事件与计数（启动、导入进度、请求状态、错误摘要），**不含对话正文与 API Key**；写盘前脱敏。设置 → 数据管理 → 运行日志可查看/导出；文件在 `Android/data/com.deepsleep.app/files/logs/deepsleep.log`，单文件 2 MB 封顶并保留一份 `.1` 滚动 |
 
-## 和本机 Codex 一起开发
-
-DSH 没有 MCP 客户端，所以两边不走 MCP；用**共享工作区 + 进程调用**：
-
-| 通道 | 做法 |
-|---|---|
-| 一次性委派 | `node tools/agent-bridge.mjs ask "<任务>"`，内部 spawn `codex exec`，输出存档到 `handoff/runs/` |
-| 独立复核 | `node tools/agent-bridge.mjs review --uncommitted` |
-| 任务/回执 | `handoff/TASK.md` 与 `handoff/REPLY.md`，规则见 `handoff/PROTOCOL.md` |
-| 事实来源 | git 分支与 diff。Codex 走 `codex/<topic>` 分支，不碰 `main` 与 `release-1.2` |
-
-前置：`codex` 已登录（`codex login`），版本 `0.163.0` 起支持 `exec` / `review`。
 ## 目录
 
 ```

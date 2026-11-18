@@ -90,6 +90,14 @@ export const useMobileViewport = (enabled: boolean) => {
     }
 
     update()
+    // 兜底：输入框被直接移除时（设置面板卸载）不会触发 focusout，
+    // 这组变量会永远停在「键盘弹起时」的值上，首屏被裁或下推，露出的就是白底。
+    // 每 500ms 检查一次：只要当前没有输入框聚焦，就把变量清掉。
+    const idleTimer = setInterval(() => {
+      if (!document.activeElement?.matches(inputSelector)) {
+        reset()
+      }
+    }, 500)
     viewport?.addEventListener('resize', schedule)
     viewport?.addEventListener('scroll', schedule)
     window.addEventListener('resize', schedule)
@@ -97,6 +105,7 @@ export const useMobileViewport = (enabled: boolean) => {
     // 等点击和焦点切换完成，避免按钮移动、或切换输入框时短暂恢复全高。
     document.addEventListener('focusout', scheduleFrame)
     return () => {
+      clearInterval(idleTimer)
       cancelAnimationFrame(animationFrame)
       viewport?.removeEventListener('resize', schedule)
       viewport?.removeEventListener('scroll', schedule)

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { errorSummary } from '../services/log.js'
 import { copyText } from '../services/clipboard.js'
 import { formatLog, getLogEntries, logError } from '../services/log.js'
 import { exportLog } from '../services/logExport.js'
@@ -20,15 +21,21 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // 崩溃栈里可能夹带用户数据：只留自有代码的文件:行，不记原始 message
     logError('ui', 'render crashed', {
-      message: error.message,
-      stack: (error.stack ?? '').slice(0, 800),
-      componentStack: (info.componentStack ?? '').slice(0, 800),
+      summary: errorSummary(error),
+      frames: (error.stack ?? '')
+        .split('\n')
+        .filter((line) => line.includes('/src/'))
+        .map((line) => line.trim().replace(/^at\s+/, '').slice(0, 80))
+        .slice(0, 5),
+      component: (info.componentStack ?? '').split('\n')[1]?.trim().slice(0, 60) ?? '',
     })
   }
 
   private copy = async () => {
-    const text = `${this.state.error?.stack ?? this.state.error?.message ?? ''}\n\n${formatLog()}`
+    // 崩溃原文可能夹带用户内容：对外只给类型名 + 日志
+    const text = `${errorSummary(this.state.error)}\n\n${formatLog()}`
     try {
       if (!(await copyText(text))) {
         return
@@ -45,7 +52,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       const path = await exportLog()
       this.setState({ saved: path === '' ? '已下载' : path })
     } catch (error) {
-      logError('log', '导出日志失败', error)
+      logError('log', '导出日志失败', errorSummary(error))
       this.setState({ saved: '导出失败' })
     }
   }

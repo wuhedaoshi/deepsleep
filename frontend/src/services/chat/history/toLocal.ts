@@ -335,10 +335,26 @@ const rawMessage = (value: unknown): RawMessage => {
   }
 }
 
-/** 沿 `current_message_id` 上溯取当前分支；结构的任何不一致都按损坏处理。 */
-const currentBranch = (messages: readonly RawMessage[], currentId: unknown): RawMessage[] => {
+
+/**
+ * 把官方 v3 的消息列表还原成**完整分支树**。
+ *
+ * 为什么不能只取当前分支：官方归档里 `parent_id` 表达了所有分支，
+ * 而 `current_message_id` 只标出"用户停在哪"。只沿当前路径导入，等于把
+ * 其它分支（重新生成产生的兄弟消息）全部丢掉——导入后无法再切分支。
+ *
+ * 规则（与官方 chat-demo 一致）：
+ * - 每条消息的 parentId 指向其父；父子角色必须交替，根必须是 USER
+ * - 沿 current_message_id 上溯，把路径上每个祖先的 selectedChildId 指向路径子节点
+ * - 其它节点的 selectedChildId 保留最后处理的子消息（存档按 id 升序，效果等于选最大 id）
+ */
+const buildTree = (
+  messages: readonly RawMessage[],
+  currentId: unknown,
+  mimeTypeOf: (fileId: string) => string
+): { messages: Message[]; rootMessageId: string | null } => {
   if (messages.length === 0) {
-    return []
+    return { messages: [], rootMessageId: null }
   }
   const byId = new Map<string, RawMessage>()
   for (const message of messages) {
@@ -347,36 +363,137 @@ const currentBranch = (messages: readonly RawMessage[], currentId: unknown): Raw
     }
     byId.set(message.id, message)
   }
+  for (const message of messages) {
+    if (message.parentId !== null && !byId.has(message.parentId)) {
+      return fail()
+    }
+  }
+
+  // 环检测：迭代标记，每节点最多访问一次（逐节点上溯最坏是 O(n²)）
+  const state = new Map<string, number>()
+  for (const message of messages) {
+    if (state.get(message.id) === 2) {
+      continue
+    }
+    const path: string[] = []
+    let cursor: RawMessage | undefined = message
+    while (cursor) {
+      const seen = state.get(cursor.id)
+      if (seen === 2) {
+        break
+      }
+      if (seen === 1) {
+        return fail()
+      }
+      state.set(cursor.id, 1)
+      path.push(cursor.id)
+      const parentId: string | null | undefined = cursor.parentId
+      cursor = parentId === null || parentId === undefined ? undefined : byId.get(parentId)
+    }
+    for (const id of path) {
+      state.set(id, 2)
+    }
+  }
+
+  // 迭代式拓扑转换：先父后子，深链不会爆栈
+  const childrenOf = new Map<string, RawMessage[]>()
+  const roots: RawMessage[] = []
+  for (const message of messages) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      roots.push(message)
+      continue
+    }
+    const siblings = childrenOf.get(parentId)
+    if (siblings) {
+      siblings.push(message)
+    } else {
+      childrenOf.set(parentId, [message])
+    }
+  }
+  // 所有根都必须是 USER（官方约束），不能只查第一个
+  for (const root of roots) {
+    if (root.role !== 'USER') {
+      return fail()
+    }
+  }
+  const converted = new Map<string, Message>()
+  const ordered: Message[] = []
+  const queue: RawMessage[] = [...roots]
+  let head = 0
+  while (head < queue.length) {
+    const raw = queue[head]
+    head += 1
+    const parentId = raw.parentId
+    const hasParent = parentId !== null && parentId !== undefined
+    const parent = hasParent ? converted.get(parentId) : undefined
+    if (hasParent) {
+      if (!parent) {
+        return fail()
+      }
+      if (byId.get(parentId as string)?.role === raw.role) {
+        return fail()
+      }
+    }
+    const message: Message =
+      raw.role === 'USER' ? toUserMessage(raw, mimeTypeOf) : toAssistantMessage(raw)
+    message.parentId = hasParent ? parentId : null
+    converted.set(raw.id, message)
+    ordered.push(message)
+    for (const child of childrenOf.get(raw.id) ?? []) {
+      queue.push(child)
+    }
+  }
+  if (ordered.length !== messages.length) {
+    return fail()
+  }
+
+  // 默认选中同父下 id 最大者（与官方一致，不依赖数组顺序）
+  for (const message of ordered) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      continue
+    }
+    const parent = converted.get(parentId)
+    if (!parent) {
+      return fail()
+    }
+    const selected = parent.selectedChildId
+    if (selected === undefined || compareIds(message.id, selected) > 0) {
+      parent.selectedChildId = message.id
+    }
+  }
+
+  // 用户停留位置：沿 current_message_id 上溯，覆盖路径上的 selectedChildId
+  // 缺 current_message_id 时不能取数组最后一项（顺序不保证），显式选 id 最大者
+  const fallbackId = messages.reduce(
+    (best, message) => (compareIds(message.id, best) > 0 ? message.id : best),
+    messages[0].id
+  )
   const startId =
     typeof currentId === 'number' || typeof currentId === 'string'
       ? String(currentId)
-      : messages[messages.length - 1].id
-  let cursor: RawMessage | undefined = byId.get(startId)
-  if (!cursor) {
-    return fail()
-  }
-  const branch: RawMessage[] = []
-  const seen = new Set<string>()
-  while (cursor) {
-    if (seen.has(cursor.id)) {
+      : converted.has(fallbackId)
+        ? fallbackId
+        : (roots[0]?.id ?? '')
+  let cursor: Message = converted.get(startId) ?? fail()
+  cursor.selectedChildId = undefined
+  const pathSeen = new Set<string>()
+  for (;;) {
+      const parentId: string | null | undefined = cursor.parentId
+    if (parentId === null || parentId === undefined) {
+      break
+    }
+    if (pathSeen.has(cursor.id)) {
       return fail()
     }
-    seen.add(cursor.id)
-    branch.push(cursor)
-    cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId) ?? fail()
+    pathSeen.add(cursor.id)
+    const parent: Message = converted.get(parentId) ?? fail()
+    parent.selectedChildId = cursor.id
+    cursor = parent
   }
-  branch.reverse()
-  if (branch[0].role !== 'USER') {
-    return fail()
-  }
-  for (let index = 1; index < branch.length; index += 1) {
-    if (branch[index].role === branch[index - 1].role) {
-      return fail()
-    }
-  }
-  return branch
+  return { messages: ordered, rootMessageId: cursor.id }
 }
-
 const toUserMessage = (raw: RawMessage, mimeTypeOf: (fileId: string) => string): UserMessage => {
   const files = raw.fragments.flatMap((fragment) =>
     fragment.type === 'FILE' ? list(fragment.files).map(attachment) : []
@@ -422,32 +539,19 @@ const officialSession = (
 ): Session => {
   const json = needObject(raw)
   const messages = list(json.messages).map(rawMessage)
-  const branch = currentBranch(messages, json.current_message_id)
-  const converted: Message[] = []
-  let previous: Message | undefined
-  for (const item of branch) {
-    const message: Message =
-      item.role === 'USER' ? toUserMessage(item, mimeTypeOf) : toAssistantMessage(item)
-    if (previous) {
-      previous.selectedChildId = message.id
-      message.parentId = previous.id
-    } else {
-      message.parentId = null
-    }
-    converted.push(message)
-    previous = message
-  }
-  if (previous) {
-    previous.selectedChildId = undefined
-  }
+  // 导入**全部**消息并建树：只取当前分支会把其它分支丢掉，导入后无法切换。
+  // 规则与官方一致：parent_id 连父子；沿 current_message_id 上溯的路径写 selectedChildId；
+  // 其余节点的 selectedChildId 保留「最后处理的子消息」（存档按 id 升序，等于选的最大 id）。
+  const tree = buildTree(messages, json.current_message_id, mimeTypeOf)
   return {
     id: text(json.id),
-    title: optionalText(json.title) ?? '',
+    title: optionalText(json.title) ?? "",
     createdAt: instant(json.inserted_at),
     updatedAt: instant(json.updated_at),
-    messages: converted,
-    rootMessageId: converted.length === 0 ? null : converted[0].id,
+    messages: tree.messages,
+    rootMessageId: tree.rootMessageId,
   }
+
 }
 
 /** 本地格式：会话 JSON 就是本地结构，只做最低限度的形状校验。 */
@@ -482,3 +586,23 @@ export const sessionFromArchive = (
   mimeTypeOf: (fileId: string) => string
 ): Session =>
   format === 'local' ? localSession(raw) : officialSession(raw, mimeTypeOf)
+/**
+ * 比较消息 id 的大小。
+ *
+ * 官方 id 是自增整数，但可能超出 Number 的安全范围，所以纯数字 id 先比长度再比字典序，
+ * 避免精度丢失导致「默认选中的分支」选错。
+ */
+const compareIds = (left: string, right: string): number => {
+  const numeric = /^\d+$/.test(left) && /^\d+$/.test(right)
+  if (numeric) {
+    if (left.length !== right.length) {
+      return left.length - right.length
+    }
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+  if (/^\d+$/.test(left) !== /^\d+$/.test(right)) {
+    // 数字 id 排在非数字之后（正反必须对称，否则比较结果随机）
+    return /^\d+$/.test(left) ? 1 : -1
+  }
+  return left < right ? -1 : left > right ? 1 : 0
+}

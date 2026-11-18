@@ -14,6 +14,110 @@
   <body>
     <div id="root"></div>
     <!--
+      旧 WebView 兼容垫片（必须在本文件的兜底脚本与 bundle 之前执行）。
+
+      现场：Honor / MagicOS 8 的 WebView 缺少 Array.prototype.at，
+      导入历史后渲染会话列表时抛 TypeError: r.at is not a function，
+      React 整棵树卸载 → 界面全白。同一台机器还缺 Object.hasOwn 与 toReversed。
+      这里补齐这些方法，而不是逐个改调用点（上游代码里有一批）。
+    -->
+    <script>
+      (function () {
+        // 记录「补了什么」和「补之前有没有」，导出日志时会带在环境信息里
+        var patched = []
+        window.__deepsleepShims = function () {
+          return patched
+        }
+
+        function define(target, name, value, label) {
+          if (typeof target[name] === 'function') {
+            return
+          }
+          var host =
+            target === Array.prototype ? 'Array' : target === String.prototype ? 'String' : ''
+          patched.push(host ? host + '.' + name : label || name)
+          Object.defineProperty(target, name, {
+            value: value,
+            writable: true,
+            configurable: true,
+          })
+        }
+
+        // Chrome 92+
+        define(Array.prototype, 'at', function arrayAt(index) {
+          var length = this.length >>> 0
+          var offset = Math.trunc(Number(index)) || 0
+          if (offset < 0) offset += length
+          return offset < 0 || offset >= length ? undefined : this[offset]
+        })
+        define(String.prototype, 'at', function stringAt(index) {
+          var length = this.length >>> 0
+          var offset = Math.trunc(Number(index)) || 0
+          if (offset < 0) offset += length
+          return offset < 0 || offset >= length ? undefined : this.charAt(offset)
+        })
+
+        // Chrome 93+
+        if (typeof Object.hasOwn !== 'function') {
+          patched.push('Object.hasOwn')
+          Object.hasOwn = function hasOwn(object, key) {
+            return Object.prototype.hasOwnProperty.call(object, key)
+          }
+        }
+
+        // Chrome 97+
+        define(Array.prototype, 'findLast', function findLast(predicate, thisArg) {
+          for (var i = this.length - 1; i >= 0; i -= 1) {
+            if (predicate.call(thisArg, this[i], i, this)) return this[i]
+          }
+          return undefined
+        })
+        define(Array.prototype, 'findLastIndex', function findLastIndex(predicate, thisArg) {
+          for (var i = this.length - 1; i >= 0; i -= 1) {
+            if (predicate.call(thisArg, this[i], i, this)) return i
+          }
+          return -1
+        })
+
+        // Chrome 100+：发送路径会用 signal.throwIfAborted()；老 WebView 没有它就抛 TypeError
+        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.prototype.throwIfAborted !== 'function') {
+          patched.push('AbortSignal.throwIfAborted')
+          Object.defineProperty(AbortSignal.prototype, 'throwIfAborted', {
+            value: function throwIfAborted() {
+              if (this.aborted) {
+                throw this.reason
+              }
+            },
+            writable: true,
+            configurable: true,
+          })
+        }
+
+        // Chrome 110+（响应式数组方法）
+        define(Array.prototype, 'toReversed', function toReversed() {
+          return Array.prototype.slice.call(this).reverse()
+        })
+        define(Array.prototype, 'toSorted', function toSorted(compare) {
+          return Array.prototype.slice.call(this).sort(compare)
+        })
+        define(Array.prototype, 'toSpliced', function toSpliced(start, deleteCount) {
+          var copy = Array.prototype.slice.call(this)
+          var rest = Array.prototype.slice.call(arguments, 2)
+          copy.splice.apply(copy, [start, deleteCount].concat(rest))
+          return copy
+        })
+        define(Array.prototype, 'with', function arrayWith(index, value) {
+          var copy = Array.prototype.slice.call(this)
+          var offset = Math.trunc(Number(index)) || 0
+          if (offset < 0) offset += copy.length
+          if (offset < 0 || offset >= copy.length) {
+            throw new RangeError('Invalid index')
+          }
+          copy[offset] = value
+          return copy
+        })
+      })()
+    </script>    <!--
       内联兜底：不依赖打包产物，所以 bundle 语法错、模块加载失败、脚本被拦时它照样能跑。
       8 秒还没挂载就在页面上直接说话，并把一行日志写进原生文件——把「白屏」变成可读的输出。
     -->

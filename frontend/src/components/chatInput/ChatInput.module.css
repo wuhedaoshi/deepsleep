@@ -223,7 +223,6 @@
   .wrapper {
     flex-shrink: 0;
     max-height: calc(var(--app-viewport-height, 100vh) - 120px);
-    max-height: calc(var(--app-viewport-height, 100dvh) - 120px);
   }
 
   .textareaWrapper {
@@ -329,5 +328,14 @@
   &.disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+}
+/* 支持 dvh 的引擎才用 dvh：var() 里的 dvh 在不支持的引擎上会让整条声明计算值无效，
+   不会回退到上一条 vh 声明。类名要与上面保持一致（.wrapper）。 */
+@supports (height: 100dvh) {
+  @media not all and (min-width: 768px) {
+    .wrapper {
+      max-height: calc(var(--app-viewport-height, 100dvh) - 120px);
+    }
   }
 }

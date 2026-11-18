@@ -23,7 +23,8 @@ import {
   needsCompaction,
 } from './compaction.js'
 import { isRiskyImageType } from '../images.js'
-import { logError, logInfo } from '../log.js'
+import { errorSummary, logError, logInfo } from '../log.js'
+import type { TranslationMessage } from '../../i18n/index.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
   applyEvent,
@@ -54,6 +55,26 @@ const SAFETY_CHECK = { level: 'high' } as const
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
+
+/**
+ * preparing 阶段失败该说什么。
+ *
+ * files>0：确实是附件上传出错，走上传相关文案。
+ * files===0：本来不该在这里抛错。只有「某个 JS 方法不存在 / 值不可迭代」这种
+ * 运行时缺失才归因到运行环境；其它情况老实说「发送失败」，别乱扣 WebView 的帽子。
+ *
+ * 注意：判断用原始 message（不落盘），落盘只写 errorSummary。
+ */
+const classifyPreparingFailure = (error: unknown, files: number): TranslationMessage => {
+  if (files > 0) {
+    return describeUploadError(error)
+  }
+  const raw = error instanceof Error ? error.message : String(error)
+  if (/is not a function|is not iterable/i.test(raw)) {
+    return { key: 'sendFailedWebView' }
+  }
+  return { key: 'sendFailedGeneric' }
+}
 
 /** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
 const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
@@ -1331,10 +1352,17 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           break
         }
         if (preparing) {
+          // 只有真在补附件阶段才记这条；别的失败交给下面的「请求失败」
+          logError('chat', 'preparing 阶段失败', {
+            kind: error instanceof ApiError ? error.kind : 'unknown',
+            status: error instanceof ApiError ? error.status : undefined,
+            summary: errorSummary(error),
+            files: request.question.files.length,
+          })
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'upload',
             message: '',
-            localMessage: describeUploadError(error),
+            localMessage: classifyPreparingFailure(error, request.question.files.length),
             retryable: isRetryableApiError(error),
           })
           break
@@ -1392,7 +1420,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
           reply = settleReply(reply, 'done', Date.now())
         } else if (error instanceof ApiError) {
-          logError('chat', '请求失败', { kind: error.kind, status: error.status, message: error.message })
+          logError('chat', '请求失败', { kind: error.kind, status: error.status, summary: errorSummary(error) })
           reply = settleReply(reply, 'error', Date.now(), {
             kind: error.kind,
             message: error.message,

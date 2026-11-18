@@ -63,8 +63,23 @@ export const validateFiles = (files: File[], currentCount: number): TranslationM
  * 服务端原文多为英文且较长，不直接展示。
  */
 export const describeUploadError = (error: unknown): TranslationMessage => {
-  if (classifyApiError(error) === 'serverBusy') {
+  // 别把一切都叫「上传失败」：Key 无效和断网都被这么显示过，
+  // 用户会以为是文件问题（真实成因见 issue：Key 填错 → 上传 401 → 提示「上传失败」）。
+  const condition = classifyApiError(error)
+  if (condition === 'serverBusy' || condition === 'rateLimited') {
     return { key: 'uploadServerBusy' }
+  }
+  if (condition === 'tooLarge') {
+    return { key: 'uploadMaxMBSize', params: { size: MAX_SIZE_MB } }
+  }
+  if (condition === 'unauthorized') {
+    return { key: 'apiKeyInvalid' }
+  }
+  if (condition === 'insufficientBalance') {
+    return { key: 'uploadInsufficientBalance' }
+  }
+  if (condition === 'network') {
+    return { key: 'commonNetworkErrorToast' }
   }
   if (getUploadErrorInfo(error)?.code === 'parseFailed') {
     return { key: 'uploadParseFailed' }
