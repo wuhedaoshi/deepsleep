@@ -113,6 +113,9 @@ final class BlankScreenGuard {
                             if (recoveries > 0 && !verified) {
                                 verified = true;
                                 log("ok(" + reason + "): 恢复生效，当前 stage=" + stage);
+                            } else {
+                                // 没白也要留痕：否则「没白」与「守卫没跑」区分不开
+                                log("checked(" + reason + "): 文本 " + length + " 字，采样非白");
                             }
                             return;
                         }

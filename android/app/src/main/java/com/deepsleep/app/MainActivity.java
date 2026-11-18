@@ -95,6 +95,30 @@ public class MainActivity extends Activity {
         return base;
     }
 
+    /** 读取日志文件尾部（最多 maxChars 个字符）；文件不存在返回空串 */
+    private String readLogTailInternal(int maxChars) {
+        File dir = logDir();
+        if (dir == null) {
+            return "";
+        }
+        File file = new File(dir, LOG_FILE);
+        if (!file.exists()) {
+            return "";
+        }
+        int limit = maxChars <= 0 ? 4000 : maxChars;
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            long length = raf.length();
+            int take = (int) Math.min(length, limit);
+            byte[] buffer = new byte[take];
+            raf.seek(length - take);
+            raf.readFully(buffer);
+            return new String(buffer, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IOException error) {
+            Log.w(TAG, "readLogTail failed: " + error.getMessage());
+            return "";
+        }
+    }
+
     /** 追加一行；任何 IO 异常都吞掉——日志本身不该影响主流程 */
     private void appendLogLine(String line) {
         File dir = logDir();
@@ -400,6 +424,15 @@ public class MainActivity extends Activity {
                 appendLogLine(line);
             }
 
+            /**
+             * 原生日志的最后 N 行（默认 4000 字符）。导出的日志要同时包含
+             * 前端事件与原生 onCreate/onPageFinished，否则只有一半证据。
+             */
+            @JavascriptInterface
+            public String readLogTail(int maxChars) {
+                return readLogTailInternal(maxChars);
+            }
+
             /** 日志文件绝对路径，界面上展示给用户，方便自己去找 */
             @JavascriptInterface
             public String getLogPath() {
@@ -661,11 +694,23 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    /** 保存对话框的 MIME：日志是纯文本，归档才是 zip */
+    private static String mimeFor(String name) {
+        String lower = name == null ? "" : name.toLowerCase();
+        if (lower.endsWith(".txt") || lower.endsWith(".log")) {
+            return "text/plain";
+        }
+        if (lower.endsWith(".zip")) {
+            return "application/zip";
+        }
+        return "application/octet-stream";
+    }
+
     private void openArchiveChooser() {
         try {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("application/zip");
+            intent.setType(mimeFor(archiveName));
             intent.putExtra(Intent.EXTRA_TITLE, archiveName);
             startActivityForResult(intent, REQ_SAVE_ARCHIVE);
         } catch (Exception error) {
@@ -853,7 +898,10 @@ public class MainActivity extends Activity {
         if (clean.isEmpty()) {
             clean = "deepsleep-history.zip";
         }
-        return clean.toLowerCase().endsWith(".zip") ? clean : clean + ".zip";
+        // 只有没扩展名时才补 .zip：日志导出传的是 .txt，之前被强改成 .txt.zip，
+        // 内容仍是纯文本，用户双击打不开（报「压缩包损坏」）。
+        int dot = clean.lastIndexOf('.');
+        return dot > 0 && dot < clean.length() - 1 ? clean : clean + ".zip";
     }
 
     /**
