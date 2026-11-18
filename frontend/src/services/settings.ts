@@ -17,6 +17,8 @@ type Settings = {
   thinking: boolean
   search: boolean
   siderCollapsed: boolean
+  /** 回车键行为：发送，还是换行（换行时用 Ctrl/⌘+Enter 发送） */
+  enterKey: EnterKeyBehavior
 }
 
 const KEYS = {
@@ -28,6 +30,7 @@ const KEYS = {
   thinking: 'deepsleep:thinking',
   search: 'deepsleep:search',
   siderCollapsed: 'deepsleep:sider-collapsed',
+  enterKey: 'deepsleep:enter-key',
 } as const
 
 const read = (key: string) => {
@@ -78,6 +81,13 @@ const initialLocation = (): UserLocation | null => {
   }
 }
 
+/** 回车键：send = 直接发送；newline = 插入换行（Ctrl/⌘+Enter 发送） */
+export type EnterKeyBehavior = 'send' | 'newline'
+
+/** 默认发送：与一直以来的行为一致，不打断老用户肌肉记忆 */
+const initialEnterKey = (): EnterKeyBehavior =>
+  read(KEYS.enterKey) === 'newline' ? 'newline' : 'send'
+
 /** 未保存过时跟随系统 */
 const initialThemePreference = (): ThemePreference => {
   const saved = read(KEYS.themePreference)
@@ -96,6 +106,7 @@ export const useSettings = create<Settings>(() => ({
   thinking: read(KEYS.thinking) === 'true',
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
+  enterKey: initialEnterKey(),
 }))
 
 export const setLocale = (locale: Locale) => {
@@ -137,4 +148,8 @@ export const setSearch = (search: boolean) => {
 export const setSiderCollapsed = (siderCollapsed: boolean) => {
   write(KEYS.siderCollapsed, String(siderCollapsed))
   useSettings.setState({ siderCollapsed })
+}
+export const setEnterKey = (enterKey: EnterKeyBehavior) => {
+  write(KEYS.enterKey, enterKey)
+  useSettings.setState({ enterKey })
 }

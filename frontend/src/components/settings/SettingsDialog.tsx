@@ -26,6 +26,7 @@ import {
   setLocale,
   setLocation,
   setThemePreference,
+  setEnterKey,
   setTtsVoice,
   useSettings,
   type ThemePreference,
@@ -103,6 +104,7 @@ const SettingsContent = () => {
             <>
               <ThemeSetting />
               <LocaleSetting />
+              <EnterKeySetting />
               <TtsVoiceSetting />
               <LocationSetting />
             </>
@@ -308,6 +310,29 @@ const LocaleSetting = () => {
             { value: 'en-US', label: t('settingsLocaleEnUS'), lang: 'en' },
           ]}
           onChange={setLocale}
+        />
+      }
+    />
+  )
+}
+
+/** 回车键：发送，或换行（换行时 Ctrl/⌘+Enter 发送） */
+const EnterKeySetting = () => {
+  const t = useTranslate()
+  const enterKey = useSettings((state) => state.enterKey)
+  return (
+    <SettingCell
+      label={t('settingsEnterKey')}
+      status={{ key: 'settingsEnterKeyHint' }}
+      action={
+        <Select
+          ariaLabel={t('settingsEnterKey')}
+          value={enterKey}
+          options={[
+            { value: 'send', label: t('settingsEnterKeySend') },
+            { value: 'newline', label: t('settingsEnterKeyNewline') },
+          ]}
+          onChange={setEnterKey}
         />
       }
     />
