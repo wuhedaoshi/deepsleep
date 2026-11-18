@@ -31,6 +31,21 @@ export type ChunkSink = (chunk: Uint8Array<ArrayBuffer>) => void | Promise<void>
 
 type Json = Record<string, unknown>
 
+/**
+ * 把可能缺失/非 ISO 的时间规整成官方要的 `YYYY-MM-DDTHH:mm:ssZ` 或 null。
+ *
+ * 官方 schema 用 `nullable(time)`：值必须是合法 ISO 时间或 null，否则整条片段被丢弃。
+ */
+const isoOrNull = (value: string | number | null | undefined): string | null => {
+  if (value === null || value === undefined) {
+    return null
+  }
+  const parsed = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 253_402_300_799_000) {
+    return null
+  }
+  return new Date(parsed).toISOString()
+}
 const iso = (value: number): string => {
   // 官方 schema 要求 `YYYY-MM-DDTHH:mm:ssZ`；NaN / 越界时间会写成 "Invalid Date"，整包被拒
   if (!Number.isFinite(value) || value < 0 || value > 253_402_300_799_000) {
@@ -106,10 +121,15 @@ const userFragments = (message: UserMessage, pathOf: Map<string, string>): Json[
         id: file.id,
         file_name: file.name,
         file_size: file.size,
-        token_usage: 0,
+        // 官方标准写 null；写 0 也能过，但 null 更接近官方导出结果
+        token_usage: null,
         inserted_at: iso(message.createdAt),
-        export_path: pathOf.get(file.id) ?? '',
+        export_path: pathOf.get(file.id) ?? null,
         is_image: file.isImage,
+        // `width` / `height` 在官方 schema 里是必填键（可为 null）：
+        // 缺了这两个键，整条 FILE 片段会被官方导入器丢弃 —— 附件在官方 APP 里就消失了。
+        width: null,
+        height: null,
       })),
     })
   }
@@ -124,9 +144,11 @@ const searchResults = (block: Extract<ReplyBlock, { type: 'web_search_tool_resul
             url: item.url,
             title: item.title,
             snippet: item.snippet,
-            ...(item.page_age === null ? {} : { published_at: item.page_age }),
+            // 官方 schema 里这两个是 `nullable(time)` / `nullable(string)`：
+            // **键必须在**，缺键会让整条 TOOL_SEARCH 片段被丢弃（搜索结果就没了）。
+            published_at: isoOrNull(item.page_age),
+            site_name: item.site_name ?? null,
             ...(item.site_icon === null ? {} : { site_icon: item.site_icon }),
-            ...(item.site_name === null ? {} : { site_name: item.site_name }),
           },
         ]
       : []
@@ -159,7 +181,8 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
       fragments.push({
         type: 'THINK',
         content: block.thinking,
-        ...(block.elapsedSeconds === undefined ? {} : { elapsed_secs: block.elapsedSeconds }),
+        // 官方 schema 要求这个键存在（可为 null）；缺键会让整条 THINK 被丢弃，思考内容丢失。
+        elapsed_secs: block.elapsedSeconds ?? null,
       })
       continue
     }
@@ -188,9 +211,11 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
         fragments.push({
           type: 'TOOL_OPEN',
           status,
-          url: block.input.url,
-          ...(document === undefined ? {} : { title: document.content.title }),
-          ...(document === undefined || document.published_at === null ? {} : { published_at: document.published_at }),
+          // url / title / published_at 在官方 schema 里都是必填键（可为 null）；
+          // 缺键会让整条 TOOL_OPEN 被丢弃，打开网页的记录就没了。
+          url: block.input.url ?? document?.url ?? null,
+          title: document?.content.title ?? null,
+          published_at: isoOrNull(document?.published_at ?? null),
         })
         break
       }
