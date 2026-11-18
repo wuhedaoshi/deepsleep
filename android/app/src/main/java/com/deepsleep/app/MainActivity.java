@@ -71,6 +71,13 @@ public class MainActivity extends Activity {
     private Object nativeBridge;
     /** 白屏诊断与自动恢复 */
     private BlankScreenGuard blankGuard;
+    /** 一次性诊断快照（白屏定案用） */
+    private DiagnosticSnapshot snapshot;
+
+    /** 诊断快照专用：以 [snap] 前缀落盘，便于导出后整段抓取 */
+    void logSnapshot(String line) {
+        appendLogLine(new java.util.Date().toInstant().toString() + " " + line);
+    }
 
     /** 原生侧自己的日志（本地服务、生命周期等），与守卫的 [blank] 区分开 */
     void logNative(String line) {
@@ -228,7 +235,11 @@ public class MainActivity extends Activity {
              */
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-        appendLogLine(new java.util.Date().toInstant().toString() + " ERROR [native] renderer 被杀（多半是内存不足），重建界面");
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " ERROR [native] renderer 被杀 didCrash=" + detail.didCrash());
+                if (snapshot != null) {
+                    snapshot.noteRendererGone(detail.didCrash());
+                }
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                     return false;
                 }
@@ -265,12 +276,34 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                appendLogLine(new java.util.Date().toInstant().toString()
+                        + " INFO [native] onPageCommitVisible " + url);
+                if (snapshot != null) {
+                    snapshot.noteCommitVisible();
+                }
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 // 与 JS 的 [boot] 打点对照：能判断白屏是「页面没加载出来」还是「加载了但脚本挂了」
                 appendLogLine(new java.util.Date().toInstant().toString()
                         + " INFO [native] onPageFinished " + url);
                 if (blankGuard != null) {
                     blankGuard.probe("page-finished");
+                }
+                if (snapshot != null) {
+                    snapshot.notePageFinished(url);
+                    for (long delay : new long[]{500L, 2000L, 5000L}) {
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (snapshot != null) {
+                                    snapshot.capture("after-load");
+                                }
+                            }
+                        }, delay);
+                    }
                 }
             }
 
@@ -525,6 +558,17 @@ public class MainActivity extends Activity {
         });
         setContentView(web);
         blankGuard.attachDrawListener();
+        snapshot = new DiagnosticSnapshot(this, web, new DiagnosticSnapshot.Sink() {
+            @Override
+            public void write(String block) {
+                for (String line : block.split("\n")) {
+                    if (!line.isEmpty()) {
+                        logSnapshot(line);
+                    }
+                }
+            }
+        });
+        snapshot.attachListeners();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);
@@ -655,7 +699,11 @@ public class MainActivity extends Activity {
      */
     @Override
     protected void onPause() {
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause"
+                + " hasFocus=" + hasWindowFocus() + " webViewShown=" + (web != null && web.isShown()));
+        if (snapshot != null) {
+            snapshot.capture("pause");
+        }
         if (web != null) {
         }
         super.onPause();
@@ -677,6 +725,9 @@ public class MainActivity extends Activity {
         web.resumeTimers();
         if (blankGuard != null) {
             blankGuard.probe("resume");
+        if (snapshot != null) {
+            snapshot.capture("resume");
+        }
         }
         web.invalidate();
         // 不再做「隐藏→显示」的重挂：那是闪屏的直接来源，而且对白屏没起作用。

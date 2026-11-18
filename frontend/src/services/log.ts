@@ -296,13 +296,25 @@ export const logGrid = (tag: string) => {
           points.push('null')
           continue
         }
+        // 只记标签与首个 class：元素文本属于用户内容，不能进日志
         const className = typeof element.className === 'string' ? element.className : ''
-        const text = (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 14)
-        points.push(`${element.tagName.toLowerCase()}.${className.split(' ')[0] || '-'}${text ? '「' + text + '」' : ''}`)
+        points.push(`${element.tagName.toLowerCase()}.${className.split(' ')[0] || '-'}`)
       }
     }
     push('info', 'layout', `grid ${tag}`, { points: points.join(' | ') })
   } catch {
     // 量不出来不影响主流程
   }
+}
+/**
+ * 异常摘要：只留类型名与「像错误码」的片段，不记可能夹带用户数据的原文。
+ * 例：TypeError:r.at is not a function → TypeError（去掉调用现场与参数）
+ */
+export const errorSummary = (error: unknown): string => {
+  if (error instanceof Error) {
+    const name = error.name || 'Error'
+    const code = /^[A-Z_]{3,}$/.exec(error.message)?.[0] ?? ''
+    return code === '' ? name : `${name}:${code}`
+  }
+  return typeof error === 'string' ? 'string' : typeof error
 }
