@@ -108,6 +108,26 @@
   padding: 0 13px;
 }
 
+.contextWindowCell {
+  flex-wrap: wrap;
+}
+
+.contextWindowCell .text {
+  flex-basis: 100%;
+  padding-right: 0;
+}
+
+.contextWindowInput {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
 .locationCell {
   flex-wrap: wrap;
 }

@@ -58,13 +58,20 @@ export const COMPACTION_POLICY: CompactionPolicy = {
   retainRatio: 0.16,
 }
 
-/** 模型窗口，与 ContextMeter 显示的 1M 同源；两者不一致时以此为准。 */
+/** 模型默认窗口；判定、摘要保留预算与仪表必须共用同一来源。 */
 export const MODEL_CONTEXT_WINDOWS: Record<ChatModel, number> = {
   'deepseek-flash': 1_000_000,
   'deepseek-v4-pro': 1_000_000,
 }
 
 export const contextWindowFor = (model: ChatModel): number => MODEL_CONTEXT_WINDOWS[model]
+
+export const resolveWindow = (model: ChatModel, override: number | null): number =>
+  override !== null &&
+  Number.isFinite(override) &&
+  override > COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
+    ? override
+    : contextWindowFor(model)
 
 /** 压力口径与 ContextMeter 一致：message_delta 里这四个数是整轮累计值。 */
 export const getPressureTokens = (usage: MessageUsage | undefined): number =>
@@ -94,26 +101,69 @@ export const shouldCompact = (
   usage: MessageUsage | undefined,
   window: number,
   policy: CompactionPolicy = COMPACTION_POLICY
-): boolean => getPressureTokens(usage) >= getThresholdTokens(window, policy)
+): boolean => getPressureTokens(usage) > getThresholdTokens(window, policy)
+
+export type CompactionEvaluation = {
+  pressure: number
+  threshold: number
+  source: 'usage' | 'estimate'
+  triggered: boolean
+  reason:
+    | 'above-threshold'
+    | 'below-threshold'
+    | 'no-usage-and-no-estimate'
+    | 'already-compacted'
+    | 'nothing-to-compact'
+}
+
+/** 与请求装配的锚点规则一致，避免切分支后沿用别的分支的摘要或重复计算已摘要历史。 */
+const getCompactionContext = (rounds: Round[], compaction: SessionCompaction | undefined) => {
+  const index = compaction === undefined
+    ? -1
+    : rounds.findIndex(([, reply]) => reply.id === compaction.upToMessageId)
+  return index < 0
+    ? { rounds, previous: undefined }
+    : { rounds: rounds.slice(index + 1), previous: compaction }
+}
 
 /**
- * 发送前的判定入口：拿最后一轮回答的 usage 换算压力，没有 usage 时不判（宁可发出去）。
- * 检查点之前那几轮的 usage 是压缩前的旧数字，用它判定会刚压完立刻再压一次，按 createdAt 排除。
+ * 检查点之前那几轮的 usage 是压缩前的旧数字，用它判定会刚压完立刻再压一次。
+ * 新检查点按轮次屏蔽，避免设备时钟回拨；旧存档缺少轮次标记时仍按 createdAt 排除。
+ * 导入历史没有 usage，必须按实际会发送的摘要与保留轮次估算，否则永远无法自动压缩。
  */
-export const needsCompaction = (
+export const evaluateCompaction = (
   rounds: Round[],
   compaction: SessionCompaction | undefined,
   window: number,
   policy: CompactionPolicy = COMPACTION_POLICY
-): boolean => {
+): CompactionEvaluation => {
   const last = rounds.at(-1)
-  if (last === undefined || last[1].usage === undefined) {
-    return false
+  const context = getCompactionContext(rounds, compaction)
+  const usagePressure = getPressureTokens(last?.[1].usage)
+  const source = Number.isFinite(usagePressure) && usagePressure > 0 ? 'usage' : 'estimate'
+  const pressure = source === 'usage'
+    ? usagePressure
+    : estimateRoundsTokens(context.rounds) +
+      (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary)))
+  const result = { pressure, threshold: getThresholdTokens(window, policy), source } as const
+  const previous = context.previous
+  if (last !== undefined && previous !== undefined && (
+    previous.lastRoundId === undefined
+      ? last[1].createdAt <= previous.createdAt
+      : last[1].id === previous.lastRoundId
+  )) {
+    return { ...result, triggered: false, reason: 'already-compacted' }
   }
-  if (compaction !== undefined && last[1].createdAt <= compaction.createdAt) {
-    return false
+  if (pressure <= 0) {
+    return { ...result, triggered: false, reason: 'no-usage-and-no-estimate' }
   }
-  return shouldCompact(last[1].usage, window, policy)
+  if (selectCompactionRange(context.rounds, getRetainTokens(window, policy)) === null) {
+    return { ...result, triggered: false, reason: 'nothing-to-compact' }
+  }
+  if (pressure <= result.threshold) {
+    return { ...result, triggered: false, reason: 'below-threshold' }
+  }
+  return { ...result, triggered: true, reason: 'above-threshold' }
 }
 
 // ---------- token 估算 ----------
@@ -347,6 +397,8 @@ const collectSummary = async (
 // ---------- 编排 ----------
 
 export type CompactionResult = {
+  /** 压缩时可见的末轮回答 id；与摘要截止位置不同，用于屏蔽旧 usage。 */
+  lastRoundId: string
   /** checkpoint 原文，不含前导与标签 */
   summary: string
   /** 被摘要到的最后一轮回答 id */
@@ -388,7 +440,8 @@ export const compactSession = async (
     ...COMPACTION_POLICY,
     ...(options.envelope?.policy ?? {}),
   }
-  const rounds = getContextRounds(getVisibleMessages(session))
+  const context = getCompactionContext(getContextRounds(getVisibleMessages(session)), session.compaction)
+  const rounds = context.rounds
   const range = selectCompactionRange(
     rounds,
     options.urgent === true ? 0 : getRetainTokens(policy.window, policy)
@@ -402,7 +455,7 @@ export const compactSession = async (
     system: options.envelope?.system,
     thinking: options.envelope?.thinking ?? lastReply?.thinking ?? false,
     search: options.envelope?.search ?? lastReply?.search ?? false,
-    previous: session.compaction,
+    previous: context.previous,
   })
   const stop = signal ?? new AbortController().signal
   let summary: string
@@ -421,11 +474,13 @@ export const compactSession = async (
         )
   }
   const savedTokens =
-    estimateRoundsTokens(range.rounds) - estimateTextTokens(frameCheckpoint(summary))
+    estimateRoundsTokens(range.rounds) +
+    (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary))) -
+    estimateTextTokens(frameCheckpoint(summary))
   if (savedTokens <= 0) {
     throw new CompactionError('not-shrinking', '摘要没有比被替换的历史更短')
   }
-  return { summary, upToMessageId: range.upToMessageId, savedTokens }
+  return { summary, upToMessageId: range.upToMessageId, savedTokens, lastRoundId: rounds[rounds.length - 1][1].id }
 }
 
 // ---------- 溢出与回退 ----------

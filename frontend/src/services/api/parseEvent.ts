@@ -1,6 +1,8 @@
+import { logWarn } from '../log.js'
 import type {
   ContentBlockDelta,
   MessageStreamEvent,
+  MessageUsage,
   OutputBlockStart,
   TextCitation,
 } from './types.js'
@@ -165,11 +167,35 @@ const readDelta = (value: unknown): ContentBlockDelta | null => {
   }
 }
 
-const isUsage = (value: unknown) =>
-  isRecord(value) &&
-  ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens'].every(
-    (key) => typeof value[key] === 'number' && Number.isFinite(value[key])
-  )
+const USAGE_FIELDS = [
+  'input_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+  'output_tokens',
+] as const
+
+const readUsage = (value: unknown): MessageUsage | undefined => {
+  const usage: MessageUsage = {
+    input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    output_tokens: 0,
+  }
+  const missingFields: string[] = []
+  for (const key of USAGE_FIELDS) {
+    const field = isRecord(value) ? value[key] : undefined
+    if (typeof field === 'number' && Number.isFinite(field)) {
+      usage[key] = field
+    } else {
+      missingFields.push(key)
+    }
+  }
+  // 网关可能只提供部分计数；保留已有值，并留下字段名方便定位协议差异。
+  if (missingFields.length > 0) {
+    logWarn('api', 'usage 字段缺失或无效', { missingFields })
+  }
+  return missingFields.length === USAGE_FIELDS.length ? undefined : usage
+}
 
 /** 未识别或无法安全消费的事件静默丢弃，不影响后续有效内容与正常结束。 */
 export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
@@ -185,7 +211,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         ...value,
         message: {
           ...value.message,
-          usage: isUsage(value.message.usage) ? value.message.usage : undefined,
+          usage: readUsage(value.message.usage),
         },
       } as MessageStreamEvent
     case 'content_block_start': {
@@ -220,7 +246,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
           ...value.delta,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
-        usage: isUsage(value.usage) ? value.usage : undefined,
+        usage: readUsage(value.usage),
       } as MessageStreamEvent
     case 'message_stop':
       break

@@ -27,6 +27,7 @@ import {
   setLocation,
   setThemePreference,
   setEnterKey,
+  setContextWindowOverride,
   setTtsVoice,
   useSettings,
   type ThemePreference,
@@ -40,6 +41,7 @@ import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { LogPanel } from './LogPanel.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
+import { COMPACTION_POLICY, DEFAULT_MODEL, resolveWindow } from '../../services/chat/compaction.js'
 
 /**
  * 设置弹窗：分「通用设置」（主题、语言、朗读音色、位置）与「数据管理」（API Key、导入、导出、删除）。
@@ -57,6 +59,7 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     icon: <IconSettingsOutline16 />,
   },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
+  { value: 'experimental', label: 'settingsExperimental', icon: <IconSettingsOutline16 /> },
 ]
 
 const SettingsContent = () => {
@@ -108,6 +111,8 @@ const SettingsContent = () => {
               <TtsVoiceSetting />
               <LocationSetting />
             </>
+          ) : section === 'experimental' ? (
+            <ContextWindowSetting />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />
@@ -228,6 +233,44 @@ const useHistoryDelete = () => {
     },
     confirm,
   }
+}
+
+const ContextWindowSetting = () => {
+  const t = useTranslate()
+  const override = useSettings((state) => state.contextWindowOverride)
+  const [value, setValue] = useState(override === null ? '' : String(override))
+  const minimum = COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
+  const parsed = value.trim() === '' ? null : Number(value)
+  const invalid = parsed !== null && (!Number.isFinite(parsed) || parsed <= minimum)
+  return (
+    <SettingCell
+      label={t('settingsContextWindow')}
+      description={t('settingsContextWindowHint', { window: resolveWindow(DEFAULT_MODEL, null), minimum })}
+      status={invalid ? { key: 'settingsContextWindowInvalid', params: { minimum } } : null}
+      className={styles.contextWindowCell}
+      action={
+        <input
+          className={styles.contextWindowInput}
+          type="number"
+          min={minimum + 1}
+          step="1"
+          aria-label={t('settingsContextWindow')}
+          aria-invalid={invalid}
+          placeholder={String(resolveWindow(DEFAULT_MODEL, null))}
+          value={value}
+          onChange={(event) => {
+            const next = event.currentTarget.value
+            setValue(next)
+            const number = next.trim() === '' ? null : Number(next)
+            // 输入中间态不能改动生效窗口，否则逐位输入会反复改变压缩预算。
+            if (number === null || (Number.isFinite(number) && number > minimum)) {
+              setContextWindowOverride(number)
+            }
+          }}
+        />
+      }
+    />
+  )
 }
 
 const LocationSetting = () => {

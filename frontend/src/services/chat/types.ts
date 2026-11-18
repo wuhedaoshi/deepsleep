@@ -116,8 +116,10 @@ export type SessionCompaction = {
   summary: string
   /** 被摘要的最后一轮回答 id，据此确定保留区的起点。 */
   upToMessageId: string
-  /** 生成时间；也用来屏蔽压缩前那几轮的旧 usage。 */
+  /** 旧存档没有末轮标记时，仍靠生成时间屏蔽压缩前的旧 usage。 */
   createdAt: number
+  /** 压缩时最后一轮回答 id；防重复不依赖设备时钟，缺省兼容旧存档。 */
+  lastRoundId?: string
   /** 估算释放的 token 数，仅供展示。 */
   savedTokens: number
 }

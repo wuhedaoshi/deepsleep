@@ -1,11 +1,11 @@
 import { useTranslate } from '../../i18n/index.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
+import { DEFAULT_MODEL, evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
+import { getContextRounds } from '../../services/chat/reply.js'
+import { useSettings } from '../../services/settings.js'
 import { Tooltip } from '../base/Tooltip.js'
 import styles from './ContextMeter.module.css'
-
-/** deepseek-flash 的上下文窗口（tokens），与官方价格页的 1M 对应。 */
-const CONTEXT_WINDOW = 1_000_000
 
 const formatTokens = (value: number): string => {
   if (value >= 1_000_000) {
@@ -26,53 +26,28 @@ const formatTokens = (value: number): string => {
  */
 export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
+  const override = useSettings((state) => state.contextWindowOverride)
   const session = useChatStore((state) =>
     sessionId === null ? undefined : state.sessionCache[sessionId]
   )
   if (!session) {
     return null
   }
-  const path = getVisibleMessages(session)
-  const lastReply = [...path]
-    .reverse()
-    .find((message) => message.role === 'assistant' && message.usage !== undefined)
-  const lastUsage = lastReply?.role === 'assistant' ? lastReply.usage : undefined
-
-  let used = 0
-  if (lastUsage) {
-    used =
-      lastUsage.input_tokens +
-      lastUsage.cache_read_input_tokens +
-      lastUsage.cache_creation_input_tokens +
-      lastUsage.output_tokens
-  } else {
-    const characters = path.reduce((sum, message) => {
-      if (message.role === 'user') {
-        return sum + message.content.length
-      }
-      return (
-        sum +
-        message.blocks.reduce((acc, block) => {
-          if (block.type === 'text') {
-            return acc + block.text.length
-          }
-          if (block.type === 'thinking') {
-            return acc + block.thinking.length
-          }
-          return acc
-        }, 0)
-      )
-    }, 0)
-    // 中文约 1 token/字，混合文本按 0.75 折算，只用于量级提示。
-    used = Math.round(characters * 0.75)
-  }
+  const rounds = getContextRounds(getVisibleMessages(session))
+  const window = resolveWindow(DEFAULT_MODEL, override)
+  const evaluation = evaluateCompaction(rounds, session.compaction, window)
+  const used = evaluation.pressure
   if (used <= 0) {
     return null
   }
 
-  const percent = Math.min(100, (used / CONTEXT_WINDOW) * 100)
+  const percent = Math.min(100, (used / window) * 100)
   return (
-    <Tooltip content={t('contextUsageTooltip')}>
+    <Tooltip content={t('contextUsageTooltip', {
+      pressure: used.toLocaleString(),
+      threshold: evaluation.threshold.toLocaleString(),
+      source: evaluation.source === 'usage' ? 'usage' : t('contextSourceEstimate'),
+    })}>
       <span className={styles.meter} aria-label={t('contextUsage')} data-percent={percent.toFixed(1)}>
         <svg className={styles.ring} viewBox="0 0 16 16" aria-hidden="true">
           <circle className={styles.track} cx="8" cy="8" r="6" />
@@ -85,7 +60,7 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
           />
         </svg>
         <span className={styles.text}>
-          {formatTokens(used)} / {formatTokens(CONTEXT_WINDOW)}
+          {formatTokens(used)} / {formatTokens(window)}
         </span>
       </span>
     </Tooltip>

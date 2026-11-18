@@ -19,6 +19,8 @@ type Settings = {
   siderCollapsed: boolean
   /** 回车键行为：发送，还是换行（换行时用 Ctrl/⌘+Enter 发送） */
   enterKey: EnterKeyBehavior
+  /** null 沿用模型默认，避免升级后把旧默认值固化成本机覆盖。 */
+  contextWindowOverride: number | null
 }
 
 const KEYS = {
@@ -31,6 +33,7 @@ const KEYS = {
   search: 'deepsleep:search',
   siderCollapsed: 'deepsleep:sider-collapsed',
   enterKey: 'deepsleep:enter-key',
+  contextWindowOverride: 'deepsleep:context-window-override',
 } as const
 
 const read = (key: string) => {
@@ -97,6 +100,9 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
+const normalizeContextWindow = (value: number | null): number | null =>
+  value !== null && Number.isFinite(value) && value > 0 ? value : null
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   locale: initialLocale(),
@@ -107,6 +113,7 @@ export const useSettings = create<Settings>(() => ({
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
   enterKey: initialEnterKey(),
+  contextWindowOverride: normalizeContextWindow(Number(read(KEYS.contextWindowOverride))),
 }))
 
 export const setLocale = (locale: Locale) => {
@@ -152,4 +159,10 @@ export const setSiderCollapsed = (siderCollapsed: boolean) => {
 export const setEnterKey = (enterKey: EnterKeyBehavior) => {
   write(KEYS.enterKey, enterKey)
   useSettings.setState({ enterKey })
+}
+
+export const setContextWindowOverride = (value: number | null) => {
+  const contextWindowOverride = normalizeContextWindow(value)
+  write(KEYS.contextWindowOverride, contextWindowOverride === null ? null : String(contextWindowOverride))
+  useSettings.setState({ contextWindowOverride })
 }

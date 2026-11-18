@@ -18,9 +18,10 @@ import { showToast } from '../../components/base/toastState.js'
 import {
   compactSession,
   CompactionError,
-  contextWindowFor,
+  DEFAULT_MODEL,
+  evaluateCompaction,
   isContextOverflowError,
-  needsCompaction,
+  resolveWindow,
 } from './compaction.js'
 import { isRiskyImageType } from '../images.js'
 import { errorSummary, logError, logInfo } from '../log.js'
@@ -44,7 +45,7 @@ import {
 } from './types.js'
 
 /** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = 'deepseek-flash'
+const MODEL: ChatModel = DEFAULT_MODEL
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
@@ -669,12 +670,16 @@ export const compactNow = async (sessionId: string): Promise<ManualCompactionOut
   }
   set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
   try {
-    const result = await compactSession(session, useSettings.getState().apiKey ?? '')
+    const settings = useSettings.getState()
+    const result = await compactSession(session, settings.apiKey ?? '', undefined, {
+      envelope: { model: MODEL, policy: { window: resolveWindow(MODEL, settings.contextWindowOverride) } },
+    })
     updateSession(sessionId, (current) => ({
       ...current,
       compaction: {
         summary: result.summary,
         upToMessageId: result.upToMessageId,
+        lastRoundId: result.lastRoundId,
         createdAt: Date.now(),
         savedTokens: result.savedTokens,
       },
@@ -683,6 +688,10 @@ export const compactNow = async (sessionId: string): Promise<ManualCompactionOut
     return 'done'
   } catch (error) {
     // 没有可压区间不是错误：历史本来就比保留预算短，说清楚即可。
+    logError('compaction', '手动压缩未完成', {
+      reason: error instanceof CompactionError ? error.reason : 'other',
+      summary: errorSummary(error),
+    })
     if (error instanceof CompactionError && error.reason === 'empty-range') {
       return 'nothing'
     }
@@ -1274,17 +1283,22 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         let compaction = getSession(sessionId)?.compaction
         // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
         // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
-        if (
-          needsCompaction(getContextRounds(prepared.history), compaction, contextWindowFor(MODEL))
-        ) {
+        const model = initial.model ?? MODEL
+        const window = resolveWindow(model, useSettings.getState().contextWindowOverride)
+        const evaluation = evaluateCompaction(getContextRounds(prepared.history), compaction, window)
+        logInfo('compaction', '自动压缩判定', evaluation)
+        if (evaluation.triggered) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
             try {
-              const result = await compactSession(session, apiKey, controller.signal)
+              const result = await compactSession(session, apiKey, controller.signal, {
+                envelope: { model, policy: { window } },
+              })
               compaction = {
                 summary: result.summary,
                 upToMessageId: result.upToMessageId,
+                lastRoundId: result.lastRoundId,
                 createdAt: Date.now(),
                 savedTokens: result.savedTokens,
               }
@@ -1292,6 +1306,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               persist(sessionId)
             } catch (error) {
               // 摘要模型不可用或返回空：不压缩，照常发送。
+              logError('compaction', '自动压缩未完成', {
+                reason: controller.signal.aborted ? 'aborted' : error instanceof CompactionError ? error.reason : 'other',
+                summary: errorSummary(error),
+              })
               if (controller.signal.aborted) {
                 throw error
               }
@@ -1391,13 +1409,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 session,
                 useSettings.getState().apiKey ?? '',
                 controller.signal,
-                { urgent: true }
+                {
+                  urgent: true,
+                  envelope: {
+                    model: initial.model ?? MODEL,
+                    policy: { window: resolveWindow(initial.model ?? MODEL, useSettings.getState().contextWindowOverride) },
+                  },
+                }
               )
               updateSession(sessionId, (current) => ({
                 ...current,
                 compaction: {
                   summary: result.summary,
                   upToMessageId: result.upToMessageId,
+                  lastRoundId: result.lastRoundId,
                   createdAt: Date.now(),
                   savedTokens: result.savedTokens,
                 },
@@ -1406,11 +1431,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               continue
             } catch (compactError) {
               // 压不下来：把原始溢出错误交给下面的分支上报，别用压缩错误覆盖它。
+              logError('compaction', '溢出恢复压缩未完成', {
+                reason: controller.signal.aborted ? 'aborted' : compactError instanceof CompactionError ? compactError.reason : 'other',
+                summary: errorSummary(compactError),
+              })
               if (controller.signal.aborted) {
                 reply = settleReply(reply, 'stopped', Date.now())
                 break
               }
-              void compactError
             } finally {
               set((state) => ({ compacting: { ...state.compacting, [sessionId]: false } }))
             }
