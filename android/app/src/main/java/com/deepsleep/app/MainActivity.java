@@ -657,9 +657,6 @@ public class MainActivity extends Activity {
     protected void onPause() {
         appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause");
         if (web != null) {
-            // 让 WebView 自己也暂停：部分 OEM WebView（Honor/MagicOS 实测）只靠 Activity
-            // 的生命周期不会停合成器，回来之后 surface 是空的，看起来就是整片白。
-            web.onPause();
         }
         super.onPause();
     }
@@ -677,7 +674,6 @@ public class MainActivity extends Activity {
         if (web == null) {
             return;
         }
-        web.onResume();
         web.resumeTimers();
         if (blankGuard != null) {
             blankGuard.probe("resume");
