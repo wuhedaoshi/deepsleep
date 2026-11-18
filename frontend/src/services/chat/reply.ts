@@ -1,4 +1,4 @@
-import type {
+import type { MessageUsage,
   AssistantBlockParam,
   FileBlockParam,
   MessageParam,
@@ -70,6 +70,44 @@ const updateBlock = (
  * 把一个流式事件合并进回复：只追加可识别的内容块，用本次请求的临时索引映射处理增量。
  * 跳过的块不占位；续写直接追加到已有内容之后，message_delta 更新结束原因与累计用量。
  */
+/**
+ * 合并 usage：只覆盖「这次真正提供了」的字段。
+ *
+ * 网关经常在 message_start 给完整输入计数、在 message_delta 只给 output_tokens；
+ * 若无脑整体替换，输入计数会被 0 覆盖，压力算出来只有几十 token，
+ * 自动压缩就永远不会触发（这正是「压缩在部分机型无用」的直接原因之一）。
+ */
+const mergeUsage = (
+  previous: MessageUsage | undefined,
+  incoming: MessageUsage | undefined,
+  provided: readonly (keyof MessageUsage)[] | undefined
+): MessageUsage | undefined => {
+  if (incoming === undefined) {
+    return previous
+  }
+  // incoming 已由 parseEvent 补零成完整对象；未提供（或没有历史）时直接采用
+  if (previous === undefined || provided === undefined) {
+    return incoming
+  }
+  const merged: MessageUsage = { ...incoming }
+  // 只把「这次没提供」的字段留成上一轮的值，避免 message_delta 把输入计数冲成 0
+  if (!provided.includes('input_tokens')) {
+    merged.input_tokens = previous.input_tokens
+  }
+  if (!provided.includes('cache_creation_input_tokens')) {
+    merged.cache_creation_input_tokens = previous.cache_creation_input_tokens
+  }
+  if (!provided.includes('cache_read_input_tokens')) {
+    merged.cache_read_input_tokens = previous.cache_read_input_tokens
+  }
+  if (!provided.includes('output_tokens')) {
+    merged.output_tokens = previous.output_tokens
+  }
+  if (merged.server_tool_use === undefined && previous.server_tool_use !== undefined) {
+    merged.server_tool_use = previous.server_tool_use
+  }
+  return merged
+}
 export const applyEvent = (
   reply: AssistantMessage,
   event: MessageStreamEvent,
@@ -80,7 +118,7 @@ export const applyEvent = (
     reply.status === 'streaming' ? reply : { ...reply, status: 'streaming' }
   switch (event.type) {
     case 'message_start':
-      return { ...next, usage: event.message.usage ?? next.usage }
+        return { ...next, usage: mergeUsage(next.usage, event.usage, event.usageProvided) }
     case 'content_block_start': {
       blockIndexes.delete(event.index)
       const block = toReplyBlock(event.content_block, now)
@@ -130,7 +168,7 @@ export const applyEvent = (
         ...next,
         stopReason: event.delta.stop_reason,
         stopDetails: event.delta.stop_details,
-        usage: event.usage ?? next.usage,
+        usage: mergeUsage(next.usage, event.usage, event.usageProvided),
       }
     default:
       return next

@@ -27,6 +27,7 @@ import {
   setLocation,
   setThemePreference,
   setEnterKey,
+  parseContextWindowInput,
   setContextWindowOverride,
   setTtsVoice,
   useSettings,
@@ -240,8 +241,8 @@ const ContextWindowSetting = () => {
   const override = useSettings((state) => state.contextWindowOverride)
   const [value, setValue] = useState(override === null ? '' : String(override))
   const minimum = COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
-  const parsed = value.trim() === '' ? null : Number(value)
-  const invalid = parsed !== null && (!Number.isFinite(parsed) || parsed <= minimum)
+    const parsed = parseContextWindowInput(value)
+    const invalid = value.trim() !== '' && (parsed === null || parsed <= minimum)
   return (
     <SettingCell
       label={t('settingsContextWindow')}
@@ -251,9 +252,7 @@ const ContextWindowSetting = () => {
       action={
         <input
           className={styles.contextWindowInput}
-          type="number"
-          min={minimum + 1}
-          step="1"
+            type="text"
           aria-label={t('settingsContextWindow')}
           aria-invalid={invalid}
           placeholder={String(resolveWindow(DEFAULT_MODEL, null))}
@@ -261,7 +260,7 @@ const ContextWindowSetting = () => {
           onChange={(event) => {
             const next = event.currentTarget.value
             setValue(next)
-            const number = next.trim() === '' ? null : Number(next)
+            const number = parseContextWindowInput(next)
             // 输入中间态不能改动生效窗口，否则逐位输入会反复改变压缩预算。
             if (number === null || (Number.isFinite(number) && number > minimum)) {
               setContextWindowOverride(number)

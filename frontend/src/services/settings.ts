@@ -161,6 +161,29 @@ export const setEnterKey = (enterKey: EnterKeyBehavior) => {
   useSettings.setState({ enterKey })
 }
 
+/**
+ * 解析用户输入的窗口大小：`1400000` / `1.4m` / `300k` 都认，空串表示恢复默认。
+ *
+ * 之前用 `type="number"` + `Number()`，`1.4m` 会变成 NaN 而被静默丢弃，
+ * 用户以为设置了、其实没生效。
+ */
+export const parseContextWindowInput = (raw: string): number | null => {
+  const text = raw.trim().toLowerCase().replace(/[_\s,]/g, '')
+  if (text === '') {
+    return null
+  }
+  const match = /^(\d+(?:\.\d+)?)([km])?$/.exec(text)
+  if (!match) {
+    return null
+  }
+  const base = Number(match[1])
+  if (!Number.isFinite(base) || base <= 0) {
+    return null
+  }
+  const factor = match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1
+  return Math.round(base * factor)
+}
+
 export const setContextWindowOverride = (value: number | null) => {
   const contextWindowOverride = normalizeContextWindow(value)
   write(KEYS.contextWindowOverride, contextWindowOverride === null ? null : String(contextWindowOverride))

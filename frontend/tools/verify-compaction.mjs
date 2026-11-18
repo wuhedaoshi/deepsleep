@@ -63,7 +63,7 @@ for (const event of [
   { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: partial },
 ]) {
   const parsed = readMessageEvent(event)
-  const value = parsed.type === 'message_start' ? parsed.message.usage : parsed.usage
+  const value = parsed.usage
   assert.deepEqual(value, { ...partial, cache_creation_input_tokens: 0 })
 }
 assert(getLogEntries().some((entry) => entry.message.includes('cache_creation_input_tokens')))

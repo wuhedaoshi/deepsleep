@@ -174,7 +174,9 @@ const USAGE_FIELDS = [
   'output_tokens',
 ] as const
 
-const readUsage = (value: unknown): MessageUsage | undefined => {
+const readUsage = (
+  value: unknown
+): { usage: MessageUsage; provided: readonly (keyof MessageUsage)[] } | undefined => {
   const usage: MessageUsage = {
     input_tokens: 0,
     cache_creation_input_tokens: 0,
@@ -191,11 +193,20 @@ const readUsage = (value: unknown): MessageUsage | undefined => {
     }
   }
   // 网关可能只提供部分计数；保留已有值，并留下字段名方便定位协议差异。
+  const provided = USAGE_FIELDS.filter((key) => !missingFields.includes(key))
+  // 一个字段都没有：当作没有 usage，交给上层估算兜底
+  if (provided.length === 0) {
+    return undefined
+  }
   if (missingFields.length > 0) {
     logWarn('api', 'usage 字段缺失或无效', { missingFields })
   }
-  return missingFields.length === USAGE_FIELDS.length ? undefined : usage
+  return { usage, provided }
 }
+
+/** 同一事件里同时要 usage 与「提供了哪些字段」，避免解析两次 */
+const readUsageCached = (value: unknown): readonly (keyof MessageUsage)[] | undefined =>
+  readUsage(value)?.provided
 
 /** 未识别或无法安全消费的事件静默丢弃，不影响后续有效内容与正常结束。 */
 export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
@@ -211,9 +222,10 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         ...value,
         message: {
           ...value.message,
-          usage: readUsage(value.message.usage),
         },
-      } as MessageStreamEvent
+        usage: readUsage(value.message.usage)?.usage,
+        usageProvided: readUsageCached(value.message.usage),
+      } as unknown as MessageStreamEvent
     case 'content_block_start': {
       const block = readBlock(value.content_block)
       return isIndex(value.index) && block
@@ -246,8 +258,9 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
           ...value.delta,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
-        usage: readUsage(value.usage),
-      } as MessageStreamEvent
+        usage: readUsage(value.usage)?.usage,
+        usageProvided: readUsageCached(value.usage),
+      } as unknown as MessageStreamEvent
     case 'message_stop':
       break
     default:

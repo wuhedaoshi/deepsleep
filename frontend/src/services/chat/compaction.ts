@@ -50,6 +50,18 @@ export type CompactionPolicy = {
  * 接口只用来校验 Key，返回体没解析，两个模型的真实窗口与默认输出上限都查不到。
  * W = 1M 时 min() 的比例支（800,000）恒小于绝对支（901,696），所以 O 猜错不影响触发点。
  */
+
+/**
+ * 文本估算说「全都要保留」时，仍然保留的最近轮次数。
+ *
+ * 为什么需要它：触发判定用真实 usage，而「能压多少」用字符估算。图片/附件占大头的会话里
+ * 两者会背离——usage 说该压了，估算说全都得保留，结果压缩永远压不动。
+ */
+const FALLBACK_KEEP_ROUNDS = 2
+
+/** 摘要掉一个带附件的轮次时，至少释放的 token 数（保守下限，只用于「是否变小」判定） */
+const ATTACHMENT_FLOOR_TOKENS = 1024
+
 export const COMPACTION_POLICY: CompactionPolicy = {
   window: 1_000_000,
   outputReserve: 32_768,
@@ -218,7 +230,13 @@ export const selectCompactionRange = (
     accumulated += estimateRoundTokens(rounds[index])
   }
   if (index === 0) {
-    return null
+    // 估算认为「全都得保留」：但触发判定用的是真实 usage，图文会话里两者会背离。
+    // 这时仍压掉较早的部分，否则长图文会话永远压不动。
+    if (rounds.length <= FALLBACK_KEEP_ROUNDS) {
+      return null
+    }
+    const fallback = rounds.slice(0, rounds.length - FALLBACK_KEEP_ROUNDS)
+    return { rounds: fallback, upToMessageId: fallback[fallback.length - 1][1].id }
   }
   const compacted = rounds.slice(0, index)
   return { rounds: compacted, upToMessageId: compacted[compacted.length - 1][1].id }
@@ -473,10 +491,18 @@ export const compactSession = async (
           error
         )
   }
-  const savedTokens =
+  // 字符估算只看得到文本。图文会话里被替换的「原文」几乎全是图片（服务端定价的 token），
+  // 用它判断「没变小」会把一份合格的摘要当成失败——这正是「压缩没用」的又一来源。
+  const textBefore =
     estimateRoundsTokens(range.rounds) +
-    (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary))) -
-    estimateTextTokens(frameCheckpoint(summary))
+    (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary)))
+  const textAfter = estimateTextTokens(frameCheckpoint(summary))
+  const attachmentFloor = range.rounds.reduce(
+    (sum, [user]) => sum + (user.files ?? []).length * ATTACHMENT_FLOOR_TOKENS,
+    0
+  )
+  // 有附件时取「文本缩减」与「附件释放下限」的较大者
+  const savedTokens = Math.max(textBefore - textAfter, attachmentFloor)
   if (savedTokens <= 0) {
     throw new CompactionError('not-shrinking', '摘要没有比被替换的历史更短')
   }

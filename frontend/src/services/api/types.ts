@@ -213,14 +213,20 @@ export type ContentBlockDelta =
 export type MessageStreamEvent =
   | {
       type: 'message_start'
+      /** 实际提供了哪些 usage 字段：缺项的字段不覆盖已有计数（网关常常只给部分） */
+      usageProvided?: readonly (keyof MessageUsage)[]
       /** id 为不带 msg_ 前缀的 UUID，等于响应头 x-ds-request-id */
       message: { id: string; model: string; usage?: MessageUsage }
+      /** 规范化后的用量（缺项补零）；message.usage 保留协议原样 */
+      usage?: MessageUsage
     }
   | { type: 'content_block_start'; index: number; content_block: OutputBlockStart }
   | { type: 'content_block_delta'; index: number; delta: ContentBlockDelta }
   | { type: 'content_block_stop'; index: number }
   | {
       type: 'message_delta'
+      /** 同 message_start：只合并真正提供了的字段，避免把输入计数覆盖成 0 */
+      usageProvided?: readonly (keyof MessageUsage)[]
       /** title 仅在开启标题且生成成功时出现；stop_details 仅在 refusal 时出现 */
       delta: {
         stop_reason: StopReason
