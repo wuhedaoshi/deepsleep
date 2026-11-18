@@ -36,6 +36,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   private copy = async () => {
     // 崩溃原文可能夹带用户内容：对外只给类型名 + 日志
     const text = `${errorSummary(this.state.error)}\n\n${formatLog()}`
+    try {
       if (!(await copyText(text))) {
         return
       }
