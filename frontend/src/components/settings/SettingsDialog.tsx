@@ -260,9 +260,15 @@ const ContextWindowSetting = () => {
           onChange={(event) => {
             const next = event.currentTarget.value
             setValue(next)
+            const trimmed = next.trim()
             const number = parseContextWindowInput(next)
-            // 输入中间态不能改动生效窗口，否则逐位输入会反复改变压缩预算。
-            if (number === null || (Number.isFinite(number) && number > minimum)) {
+            // 只有「明确清空」才恢复默认；非法输入保留原设置，否则打错一个字就把窗口打回 1M，
+            // 会让小窗口模型的压缩推迟到超窗。
+            if (trimmed === '') {
+              setContextWindowOverride(null)
+              return
+            }
+            if (number !== null && number > minimum) {
               setContextWindowOverride(number)
             }
           }}

@@ -497,12 +497,15 @@ export const compactSession = async (
     estimateRoundsTokens(range.rounds) +
     (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary)))
   const textAfter = estimateTextTokens(frameCheckpoint(summary))
+  // 附件也算进「被替换掉的原文总量」：图片按服务端定价的 token 远大于文本，
+  // 只把文本算进 before、再拿它跟摘要比，会把合格摘要判成没变小。
+  // 但注意不能反过来用 max 给「有附件」兜一个正数——那样任意长的摘要都能过，
+  // 压缩反而会让上下文变大。正确口径：before = 文本 + 附件下限，after = 摘要文本。
   const attachmentFloor = range.rounds.reduce(
     (sum, [user]) => sum + (user.files ?? []).length * ATTACHMENT_FLOOR_TOKENS,
     0
   )
-  // 有附件时取「文本缩减」与「附件释放下限」的较大者
-  const savedTokens = Math.max(textBefore - textAfter, attachmentFloor)
+  const savedTokens = textBefore + attachmentFloor - textAfter
   if (savedTokens <= 0) {
     throw new CompactionError('not-shrinking', '摘要没有比被替换的历史更短')
   }

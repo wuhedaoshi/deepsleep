@@ -1,6 +1,7 @@
 // 本地验收不访问真实 API，避免测试摘要消耗额度或修改用户会话。
 // node --experimental-transform-types --import ./tools/run-ts.mjs tools/verify-compaction.mjs
 import assert from 'node:assert/strict'
+import { parseContextWindowInput } from '../src/services/settings.ts'
 import 'fake-indexeddb/auto'
 
 globalThis.__API_ORIGIN__ = 'http://compaction.invalid'
@@ -204,3 +205,10 @@ assert.equal(useChatStore.getState().sessionCache.overflow.compaction.lastRoundI
 assert.equal(COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom, 98_304)
 console.log('PASS store integration: imported history auto-compacts; checkpoint persisted; errors logged and send continues; manual uses 300k budget; overflow retries with checkpoint')
 console.log('ALL CHECKS PASSED')
+
+// —— 复审补充（1.3.13）——
+// 附件只影响「原文总量」，不能给「摘要必须变小」兜正数；空串才重置窗口。
+assert.equal(parseContextWindowInput(''), null)
+assert.equal(parseContextWindowInput('abc'), null)
+assert.equal(parseContextWindowInput('1.4m'), 1_400_000)
+console.log('PASS extra: window parse (empty resets, invalid is null, 1.4m works)')
