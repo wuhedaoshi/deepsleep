@@ -182,8 +182,8 @@ export class HistoryArchive {
       this.boundFiles.set(`${sessionId}/${fileId}`, attachment)
     }
 
-    // 先把本会话声明的所有 fileId 收齐：v4 在 `message.files[]`，v3 在 `FILE.files[]`
-    const declared: string[] = []
+    // 先把本会话声明的所有 (fileId, 原始文件名) 收齐：v4 在 `message.files[]`，v3 在 `FILE.files[]`
+    const declared: { id: string; name: string }[] = []
     const v3Entries: { id: string; exportPath: string }[] = []
     for (const message of messages) {
       if (message === null || typeof message !== 'object') {
@@ -192,9 +192,9 @@ export class HistoryArchive {
       const files = (message as { files?: unknown }).files
       if (Array.isArray(files)) {
         for (const entry of files) {
-          const id = (entry as { id?: unknown } | null)?.id
-          if (typeof id === 'string') {
-            declared.push(id)
+          const file = (entry ?? {}) as { id?: unknown; name?: unknown }
+          if (typeof file.id === 'string') {
+            declared.push({ id: file.id, name: typeof file.name === 'string' ? file.name : '' })
           }
         }
       }
@@ -208,11 +208,11 @@ export class HistoryArchive {
           continue
         }
         for (const entry of record.files) {
-          const file = (entry ?? {}) as { id?: unknown; export_path?: unknown }
+          const file = (entry ?? {}) as { id?: unknown; file_name?: unknown; export_path?: unknown }
           if (typeof file.id !== 'string') {
             continue
           }
-          declared.push(file.id)
+          declared.push({ id: file.id, name: typeof file.file_name === 'string' ? file.file_name : '' })
           if (typeof file.export_path === 'string') {
             v3Entries.push({ id: file.id, exportPath: file.export_path })
           }
@@ -220,19 +220,54 @@ export class HistoryArchive {
       }
     }
 
-    // 按「最长 id 前缀」判定条目归属：`f_x_y_name` 属于 `f_x_y` 而不是 `f_x`。
-    // 用最短前缀兜底会把 `f_x` 的条目错绑到 `f_x_y` 上（两个附件都读成后者）。
-    const longestFirst = [...new Set(declared)].sort((left, right) => right.length - left.length)
     const dir = sessionFilesDir(sessionId)
-    for (const attachment of this.attachmentsBySession.get(sessionId) ?? []) {
-      const owner = longestFirst.find((id) =>
-        attachment.path.startsWith(`${dir}${safePathSegment(id)}_`)
-      )
-      if (owner !== undefined) {
-        bind(owner, attachment.path)
+    const bound = new Set<string>()
+    const claimedPaths = new Set<string>()
+
+    // ① 精确匹配（id + 文件名）：这是唯一不会串的判据。
+    //    为什么不能只靠前缀：`f_x` + 文件名 `y_a.png` 与 `f_x_y` + `a.png` 会拼出同一个路径，
+    //    按最长前缀判会把前者判给 `f_x_y`。路径撞车时只让**先声明的**拿到原件，
+    //    另一个保持「只有元数据」，不会两个附件读成同一个文件。
+    for (const file of declared) {
+      if (bound.has(file.id)) {
+        continue
+      }
+      const exact = `${dir}${safePathSegment(file.id)}_${safePathSegment(file.name)}`.normalize('NFC')
+      if (claimedPaths.has(exact)) {
+        continue
+      }
+      const attachment = this.attachmentByKey.get(exact)
+      if (attachment !== undefined) {
+        bind(file.id, attachment.path)
+        bound.add(file.id)
+        claimedPaths.add(exact)
       }
     }
-    // v3 的 export_path 是权威来源，最后覆盖
+
+    // ② 还没绑上的，按最长 id 前缀兜底（名字被改过、或旧归档用了别的后缀）。
+    //    比较前两端统一 NFC：分解形式的 id（`fe\u0301`）否则永远匹配不上。
+    const rest = [...new Set(declared.map((file) => file.id))].filter((id) => !bound.has(id))
+    const longestFirst = rest.sort((left, right) => right.length - left.length)
+    for (const attachment of this.attachmentsBySession.get(sessionId) ?? []) {
+      const path = attachment.path.normalize('NFC')
+      if (claimedPaths.has(path)) {
+        continue
+      }
+      const owner = longestFirst.find((id) => {
+        if (bound.has(id)) {
+          return false
+        }
+        const prefix = `${dir}${safePathSegment(id)}_`.normalize('NFC')
+        return path.startsWith(prefix)
+      })
+      if (owner !== undefined) {
+        bind(owner, attachment.path)
+        bound.add(owner)
+        claimedPaths.add(path)
+      }
+    }
+
+    // ③ v3 的 export_path 是权威来源，最后覆盖
     for (const entry of v3Entries) {
       bind(entry.id, entry.exportPath)
     }
