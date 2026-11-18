@@ -30,4 +30,5 @@ Thumbs.db
 # 构建期由 build-apk 同步进来的前端产物（真源是 frontend/dist）
 android/app/src/main/assets/web/
 frontend/src/icon.png
-
+# 与本机 Codex 的交接记录（只有协议本身入库）
+handoff/runs/

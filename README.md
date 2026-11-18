@@ -29,6 +29,18 @@
 | 深色 / 多语言 / 语音朗读 | 跟随系统主题，简体中文与英文，Web Speech + 服务端 TTS |
 | 运行日志 | 事件与计数（启动、导入进度、请求状态、错误摘要），**不含对话正文与 API Key**；设置 → 数据管理 → 运行日志可查看/导出；文件在 `Android/data/com.deepsleep.app/files/logs/deepsleep.log`，单文件 2 MB 封顶并保留一份 `.1` 滚动 |
 
+## 和本机 Codex 一起开发
+
+DSH 没有 MCP 客户端，所以两边不走 MCP；用**共享工作区 + 进程调用**：
+
+| 通道 | 做法 |
+|---|---|
+| 一次性委派 | `node tools/agent-bridge.mjs ask "<任务>"`，内部 spawn `codex exec`，输出存档到 `handoff/runs/` |
+| 独立复核 | `node tools/agent-bridge.mjs review --uncommitted` |
+| 任务/回执 | `handoff/TASK.md` 与 `handoff/REPLY.md`，规则见 `handoff/PROTOCOL.md` |
+| 事实来源 | git 分支与 diff。Codex 走 `codex/<topic>` 分支，不碰 `main` 与 `release-1.2` |
+
+前置：`codex` 已登录（`codex login`），版本 `0.163.0` 起支持 `exec` / `review`。
 ## 目录
 
 ```
