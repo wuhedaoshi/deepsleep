@@ -524,6 +524,7 @@ public class MainActivity extends Activity {
             }
         });
         setContentView(web);
+        blankGuard.attachDrawListener();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);

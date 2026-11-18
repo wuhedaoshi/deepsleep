@@ -39,6 +39,18 @@ final class BlankScreenGuard {
     /** 非白判定：像素亮度低于这个值算「有内容」 */
     private static final int CONTENT_LEVEL = 240;
 
+    /** 最近一次采样窗口内 WebView 的 onDraw 次数：0 说明系统压根没让它画 */
+    private int drawCount = 0;
+    private boolean drawListenerAttached = false;
+
+    private final android.view.ViewTreeObserver.OnDrawListener onDrawListener =
+            new android.view.ViewTreeObserver.OnDrawListener() {
+                @Override
+                public void onDraw() {
+                    drawCount += 1;
+                }
+            };
+
     private final Activity activity;
     private final WebView web;
     private final Host host;
@@ -70,6 +82,19 @@ final class BlankScreenGuard {
         busy.set(false);
     }
 
+    /** 挂上绘制监听：用来区分「没让它画」与「画了没上屏」 */
+    void attachDrawListener() {
+        if (drawListenerAttached || web == null) {
+            return;
+        }
+        try {
+            web.getViewTreeObserver().addOnDrawListener(onDrawListener);
+            drawListenerAttached = true;
+        } catch (Throwable error) {
+            host.log("draw-listener 挂载失败: " + error);
+        }
+    }
+
     void probe(final String reason) {
         handler.postDelayed(new Runnable() {
             @Override
@@ -93,7 +118,10 @@ final class BlankScreenGuard {
                     public void onSample(int nonWhitePermille, boolean captureFailed) {
                         int viewPermille = drawProbePermille();
                         busy.set(false);
+                        int frames = drawCount;
+                        drawCount = 0;
                         host.log("probe(" + reason + "): 文本 " + textLength + " 字"
+                                + "，绘制次数 " + frames + (frames == 0 ? "（系统没让它画）" : "")
                                 + "，屏幕非白 " + (captureFailed ? "抓取失败" : nonWhitePermille + "‰")
                                 + "，自绘非白 " + viewPermille + "‰");
                     }
