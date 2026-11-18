@@ -95,7 +95,7 @@ const assertSafeId = (value: string): string => {
 const attachmentPath = (sessionId: string, fileId: string, name: string): string =>
   `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`
 
-const userFragments = (message: UserMessage, sessionId: string): Json[] => {
+const userFragments = (message: UserMessage, pathOf: Map<string, string>): Json[] => {
   const fragments: Json[] = [{ type: 'REQUEST', content: message.content }]
   if (message.files.length > 0) {
     fragments.push({
@@ -106,7 +106,7 @@ const userFragments = (message: UserMessage, sessionId: string): Json[] => {
         file_size: file.size,
         token_usage: 0,
         inserted_at: iso(message.createdAt),
-        export_path: attachmentPath(sessionId, file.id, file.name),
+        export_path: pathOf.get(file.id) ?? '',
         is_image: file.isImage,
       })),
     })
@@ -330,11 +330,36 @@ const assertTreeExportable = (session: Session): void => {
   }
 }
 
-const sessionJson = (raw: Session): { json: Json; files: { id: string; name: string }[] } => {
+const sessionJson = (
+  raw: Session
+): { json: Json; files: { id: string; name: string; path: string }[] } => {
   // 升级前保存的线性会话没有分支字段：先补齐，否则导出会写出多个根节点，官方导入器直接拒绝。
   const session = normalizeSession(raw)
   assertTreeExportable(session)
-  const files: { id: string; name: string }[] = []
+  const files: { id: string; name: string; path: string }[] = []
+  // 路径必须唯一：不同 (id, name) 组合可能拼出同一串（`a` + `b_c.png` 与 `a_b` + `c.png`），
+  // 官方导入器见到重名条目会判整包损坏。所以在这里统一分配，冲突时加序号后缀。
+  const pathOf = new Map<string, string>()
+  const usedPaths = new Set<string>()
+  const allocatePath = (fileId: string, name: string): string => {
+    const known = pathOf.get(fileId)
+    if (known !== undefined) {
+      return known
+    }
+    const base = attachmentPath(session.id, fileId, name)
+    let candidate = base
+    let suffix = 2
+    while (usedPaths.has(candidate)) {
+      const dot = base.lastIndexOf('.')
+      const stem = dot === -1 ? base : base.slice(0, dot)
+      const ext = dot === -1 ? '' : base.slice(dot)
+      candidate = `${stem}_${suffix}${ext}`
+      suffix += 1
+    }
+    usedPaths.add(candidate)
+    pathOf.set(fileId, candidate)
+    return candidate
+  }
   // 官方用整数 id，本地是字符串（新会话是 uuid）。编号顺序**必须保证父在子之前**：
   // 官方导入器按 id 升序处理，父 id 更大时会找不到父节点而整包失败。
   // 所以先做拓扑排序（根 → 子），再按这个顺序编号。
@@ -349,7 +374,7 @@ const sessionJson = (raw: Session): { json: Json; files: { id: string; name: str
     const parentId = localParent === null || localParent === undefined ? null : (idOf.get(localParent) ?? null)
     if (message.role === 'user') {
       for (const file of message.files) {
-        files.push({ id: file.id, name: file.name })
+        files.push({ id: file.id, name: file.name, path: allocatePath(file.id, file.name) })
       }
       return {
         id,
@@ -360,7 +385,7 @@ const sessionJson = (raw: Session): { json: Json; files: { id: string; name: str
         search_enabled: false,
         accumulated_token_usage: 0,
         inserted_at: iso(message.createdAt),
-        fragments: userFragments(message, session.id),
+        fragments: userFragments(message, pathOf),
       }
     }
     return {
@@ -530,7 +555,7 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
       if (entryCount + 1 > MAX_ENTRIES || totalBytes + blob.size > MAX_TOTAL_BYTES) {
         throw new BackupError('backupTooLarge')
       }
-      await addBlob(attachmentPath(session.id, file.id, file.name), blob)
+      await addBlob(file.path, blob)
       entryCount += 1
       totalBytes += blob.size
     }
