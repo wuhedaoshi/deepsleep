@@ -2,6 +2,30 @@
 
 ## 1.2.13（导出保留分支结构）
 
+### 导入/导出保真（复审十五轮后收口）
+
+**导出侧**
+
+- 父节点必须排在子节点前（官方按 id 升序处理）→ 拓扑排序后编号
+- 老线性会话导出前 `normalizeSession()`，避免多个根节点
+- 导出前校验：id 唯一 / 父存在 / 无环 / 根必须 USER / 父子角色交替
+- 路径安全：过滤 NUL 与控制字符，`session.id` 与 `file.id` 按**官方规则**校验（允许点与非 ASCII）
+- 路径去重：NFC 等价名、`a`+`b_c.png` 与 `a_b`+`c.png` 这类撞名统一分配
+- 空附件收尾、ZIP32 上限、时间合法性
+- 官方 `nullable` 必填键补齐（FILE 的 `width/height`、THINK 的 `elapsed_secs`、TOOL_OPEN 与搜索结果的 `published_at/site_name`）
+- **导入时原样留存片段**（`archivedFragments`），导出原样还原并重写 `export_path`：
+  保住 `TIP`、`CONTENT_RISK`、`PARTIAL_FILE_READ`、`TOOL_IMAGE_SEARCH`、工具状态、`snippet`、图片尺寸
+
+**导入侧**
+
+- 新增 `paths.ts`：会话 id / 附件路径规则唯一来源（导入与导出共用）
+- 附件改为**按 `export_path` 绑定**，不再从文件名拆 id（`f_a` 曾被截成 `f`）
+- 绑定三阶段：精确 (id+文件名) 优先 → 前缀仅兜底 → `export_path` 权威（缺失时清除猜测绑定）
+- 匹配前统一 NFC（分解形式 `fe\u0301` 也能命中）；路径占用不重复，缺原件保持「只有元数据」
+- v4 本地格式没有 `fragments`，按 `message.files[]` 与旧命名补绑定
+- 导入管线改走 `archive.sessionOf`（此前绕过绑定，附件原件写入数为 0）
+
+**验收**：官方 10 段片段往返全保留；`s.1` 会话 id、`f_a` 附件 id、撞名路径、缺原件、NFC 等价名、v4 无 fragments —— 全部实测通过。
 ### 导出的结构性问题（复审后又修了六轮）
 
 - **父节点后置**：官方按 id 升序处理，父 id 必须小于子 id；改为拓扑排序后编号
