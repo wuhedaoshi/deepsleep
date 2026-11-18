@@ -5,6 +5,7 @@ import { Modal } from '../base/Modal.js'
 import { showToast } from '../base/toastState.js'
 import { formatLog, getLogEntries, logInfo } from '../../services/log.js'
 import { exportLog } from '../../services/logExport.js'
+import { copyText } from '../../services/clipboard.js'
 
 /** 原生侧日志文件的绝对路径；桌面浏览器为空 */
 const nativeLogPath = (): string => {
@@ -38,10 +39,9 @@ export const LogPanel = ({ onClose }: { onClose: () => void }) => {
   }
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text)
+    if (await copyText(text)) {
       showToast({ key: 'logCopied' })
-    } catch {
+    } else {
       showToast({ key: 'logCopyFailed' })
     }
   }

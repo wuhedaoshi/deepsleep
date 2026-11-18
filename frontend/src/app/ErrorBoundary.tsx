@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { copyText } from '../services/clipboard.js'
 import { formatLog, getLogEntries, logError } from '../services/log.js'
 import { exportLog } from '../services/logExport.js'
 
@@ -29,7 +30,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   private copy = async () => {
     const text = `${this.state.error?.stack ?? this.state.error?.message ?? ''}\n\n${formatLog()}`
     try {
-      await navigator.clipboard.writeText(text)
+      if (!(await copyText(text))) {
+        return
+      }
       this.setState({ copied: true })
       setTimeout(() => this.setState({ copied: false }), 2000)
     } catch {
