@@ -159,6 +159,7 @@ export const zh = {
   apiKeyPlaceholder: '请输入 API Key',
   apiKeyVerifying: '正在验证...',
   confirm: '确定',
+  sendFailedGeneric: '发送失败，请重试；多次出现请导出日志反馈',
   sendFailedWebView: '发送失败：系统 WebView 版本过低（缺少必要的 JS 方法），请在应用商店更新「Android System WebView」后重试',
   apiKeyInvalid: 'API Key 无效，请检查后重试',
   apiKeyVerificationFailed: '校验失败：{message}',

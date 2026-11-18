@@ -1,8 +1,6 @@
 package com.deepsleep.app;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -39,13 +37,11 @@ final class BlankScreenGuard {
         void log(String line);
     }
 
-    private static final String PREFS = "deepsleep.blank";
     /** 采样点（相对高度） */
     private static final float[] SAMPLE_RATIOS = {0.25f, 0.5f, 0.75f};
     private static final int SAMPLE_SIZE = 48;
     /** 非白判定：像素亮度低于这个值算「有内容」 */
     private static final int CONTENT_LEVEL = 240;
-    private static final int MIN_TEXT_LENGTH = 20;
 
     private final Activity activity;
     private final WebView web;
@@ -66,6 +62,18 @@ final class BlankScreenGuard {
      * 两者都不足以单独判定白屏，所以这里不做任何结论，只把读数写进日志，
      * 由人工（或以后有可靠判据时）判断。
      */
+    /**
+     * 取消所有待执行的采样回调。
+     *
+     * 曾经没有这个方法：probe() 的 1.2 秒延迟回调会在 Activity 销毁后照常触发，
+     * 作用在已经 destroy() 的 WebView 上（evaluateJavascript / PixelCopy），
+     * 既泄漏旧实例，也让 busy 永远卡在 true。onDestroy 里必须先调用它。
+     */
+    void dispose() {
+        handler.removeCallbacksAndMessages(null);
+        busy.set(false);
+    }
+
     void probe(final String reason) {
         handler.postDelayed(new Runnable() {
             @Override
@@ -82,11 +90,8 @@ final class BlankScreenGuard {
         askTextLength(new TextCallback() {
             @Override
             public void onText(int textLength) {
-                if (textLength < MIN_TEXT_LENGTH) {
-                    busy.set(false);
-                    host.log("probe(" + reason + "): 页面文本 " + textLength + " 字，未就绪，跳过");
-                    return;
-                }
+                // 不因「文本少」跳过采样：用户反馈过「连 Key 都填不了」，
+                // 那种空页文本量本来就低，恰恰是最需要读数的时候。
                 sampleScreen(new SampleCallback() {
                     @Override
                     public void onSample(int nonWhitePermille, boolean captureFailed) {

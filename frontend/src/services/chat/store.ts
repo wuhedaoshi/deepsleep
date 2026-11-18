@@ -16,6 +16,7 @@ import {
 } from './drafts.js'
 import { isRiskyImageType } from '../images.js'
 import { logError, logInfo } from '../log.js'
+import type { TranslationMessage } from '../../i18n/index.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
   applyEvent,
@@ -46,6 +47,24 @@ const SAFETY_CHECK = { level: 'high' } as const
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
+
+/**
+ * preparing 阶段失败该说什么。
+ *
+ * files>0：确实是附件上传出错，走上传相关文案。
+ * files===0：本来不该在这里抛错。只有「某个 JS 方法不存在 / 值不可迭代」这种
+ * 运行时缺失才归因到运行环境；其它情况老实说「发送失败」，别乱扣 WebView 的帽子。
+ */
+const classifyPreparingFailure = (error: unknown, files: number): TranslationMessage => {
+  if (files > 0) {
+    return describeUploadError(error)
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  if (/is not a function|is not iterable/i.test(message)) {
+    return { key: 'sendFailedWebView' }
+  }
+  return { key: 'sendFailedGeneric' }
+}
 
 /** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
 const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
@@ -1229,23 +1248,19 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           reply = settleReply(reply, 'stopped', Date.now())
           break
         }
-          // 附件补齐阶段失败要留痕：之前这里不打日志，用户只看到「上传失败」，日志里什么都没有。
-          logError('chat', '附件上传失败', {
+          // 只有真的处在「补齐附件」阶段才记这条；之后的失败由下面的分支记成「请求失败」，
+          // 否则 401、断流、运行时 TypeError 统统会被写成「附件上传失败」，误导排查。
+        if (preparing) {
+          logError('chat', 'preparing 阶段失败', {
             kind: error instanceof ApiError ? error.kind : 'unknown',
             status: error instanceof ApiError ? error.status : undefined,
             message: error instanceof Error ? error.message : String(error),
             files: request.question.files.length,
           })
-        if (preparing) {
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'upload',
             message: '',
-            // files===0 还在这里抛错，说明不是附件问题（实测是 WebView 缺 API，
-            // 例如 toReversed）。别把它说成「上传失败」，直接指出运行环境。
-            localMessage:
-              request.question.files.length === 0 && error instanceof TypeError
-                ? { key: 'sendFailedWebView' }
-                : describeUploadError(error),
+            localMessage: classifyPreparingFailure(error, request.question.files.length),
             retryable: isRetryableApiError(error),
           })
           break

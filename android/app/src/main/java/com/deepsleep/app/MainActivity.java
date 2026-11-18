@@ -72,6 +72,11 @@ public class MainActivity extends Activity {
     /** 白屏诊断与自动恢复 */
     private BlankScreenGuard blankGuard;
 
+    /** 原生侧自己的日志（本地服务、生命周期等），与守卫的 [blank] 区分开 */
+    void logNative(String line) {
+        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] " + line);
+    }
+
     /**
      * 供 BlankScreenGuard 等辅助类写日志。
      *
@@ -88,8 +93,6 @@ public class MainActivity extends Activity {
     /** 单文件上限；超了滚成 .1，只留一份历史，别把用户空间吃掉 */
     private static final long LOG_MAX_BYTES = 2L * 1024 * 1024;
     private final Object logLock = new Object();
-    /** 是否至少进过后台：只有从后台回来才做重新挂载，避免每次 resume 闪一下 */
-    private boolean stoppedOnce = false;
 
     private File logDir() {
         File base = getExternalFilesDir("logs");
@@ -120,7 +123,16 @@ public class MainActivity extends Activity {
             byte[] buffer = new byte[take];
             raf.seek(length - take);
             raf.readFully(buffer);
-            return new String(buffer, java.nio.charset.StandardCharsets.UTF_8);
+            // 从中间切会劈开多字节字符，导致首行乱码：退到第一个换行之后
+            int offset = 0;
+            while (offset < take - 1 && !(buffer[offset] == '\n')) {
+                offset += 1;
+            }
+            if (offset >= take - 1) {
+                offset = 0;
+            }
+            return new String(buffer, offset, take - offset,
+                    java.nio.charset.StandardCharsets.UTF_8);
         } catch (IOException error) {
             Log.w(TAG, "readLogTail failed: " + error.getMessage());
             return "";
@@ -194,7 +206,7 @@ public class MainActivity extends Activity {
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
         // 不额外加硬件层：LAYER_TYPE_HARDWARE 只是多套一层离屏缓冲，不是「让它画出来」的开关，
-        // 反而可能是白屏的诱因之一。白屏由 BlankScreenGuard 实测后按阶梯恢复。
+        // 反而可能是白屏的诱因之一。BlankScreenGuard 目前只采样写日志，不做自动恢复。
         // 保持默认绘制路径；不根据历史结论强制软件层（会让正常机器的滚动变慢）
         web.setLayerType(View.LAYER_TYPE_NONE, null);
         WebSettings s = web.getSettings();
@@ -229,6 +241,15 @@ public class MainActivity extends Activity {
                     }
                     view.destroy();
                 }
+                // 渲染进程反复死的时候不能无限重建：一个进程内最多重建 2 次
+                int rebuilds = getPreferences(android.content.Context.MODE_PRIVATE)
+                        .getInt("renderer.rebuilds", 0);
+                if (rebuilds >= 2) {
+                    logNative("renderer 连续被杀 " + rebuilds + " 次，停止重建");
+                    return false;
+                }
+                getPreferences(android.content.Context.MODE_PRIVATE).edit()
+                        .putInt("renderer.rebuilds", rebuilds + 1).apply();
                 recreate();
                 return true;
             }
@@ -454,6 +475,12 @@ public class MainActivity extends Activity {
                     return false;
                 }
                 try {
+                    // 先确认拿得到剪贴板服务，拿不到就别谎报成功
+                    android.content.ClipboardManager probe =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (probe == null) {
+                        return false;
+                    }
                     final String value = text;
                     runOnUiThread(new Runnable() {
                         @Override
@@ -622,8 +649,8 @@ public class MainActivity extends Activity {
 
     /**
      * 生命周期留痕 + 回前台时重新挂载 WebView。
-     * 为什么需要重新挂载：Honor/MagicOS 上从后台回来，WebView 的绘制缓冲会丢，
-     * DOM 和布局都正常（日志里 bodyText 有内容）但屏幕整片白，重新 attach 才会重画。
+     * 注意：早期版本在回前台时做过「隐藏→显示」重挂，那是闪屏的直接来源且对白屏无效，已删除；
+     * 现在回前台只 invalidate。
      */
     @Override
     protected void onPause() {
@@ -639,7 +666,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onStop");
-        stoppedOnce = true;
         super.onStop();
     }
 
@@ -656,11 +682,7 @@ public class MainActivity extends Activity {
             blankGuard.probe("resume");
         }
         web.invalidate();
-        if (!stoppedOnce) {
-            return;
-        }
         // 不再做「隐藏→显示」的重挂：那是闪屏的直接来源，而且对白屏没起作用。
-        stoppedOnce = false;
         web.invalidate();
     }
 
@@ -675,6 +697,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        // 记录销毁原因：recreate 循环的现场全靠这行区分
+        appendLogLine(new java.util.Date().toInstant().toString()
+                + " INFO [native] onDestroy isFinishing=" + isFinishing());
         Uri partial = null;
         synchronized (archiveLock) {
             if (archiveState != ARCHIVE_IDLE) {
@@ -693,6 +718,11 @@ public class MainActivity extends Activity {
         archiveStopping = true;
         archiveWriter = null;
         deleteArchiveDocument(partial);
+        // 先取消守卫的延迟采样：否则回调会落在已销毁的 WebView 上（泄漏 + busy 卡死）
+        if (blankGuard != null) {
+            blankGuard.dispose();
+            blankGuard = null;
+        }
         // WebView 必须显式销毁：否则它的渲染线程与 Context 会跟着泄漏，
         // 多次重建后容易表现为「页面在、画面空」。
         if (web != null) {
@@ -1026,7 +1056,7 @@ public class MainActivity extends Activity {
     private void startServer() {
         synchronized (MainActivity.class) {
             if (serverStarted) {
-                logFromGuard("本地服务已在运行，跳过重复启动");
+                logNative("本地服务已在运行，跳过重复启动");
                 return;
             }
             serverStarted = true;
@@ -1045,8 +1075,12 @@ public class MainActivity extends Activity {
                         }).start();
                     }
                 } catch (IOException error) {
-                    // 端口被占（上一次进程没退干净）时不再静默：留一行给诊断
-                    logFromGuard("本地服务启动失败：" + error.getMessage());
+                    // 端口被占（上一次进程没退干净）时不再静默：留一行给诊断，
+                    // 并且复位标志——否则这次失败会让以后每次重建都跳过启动，等于没有服务
+                    synchronized (MainActivity.class) {
+                        serverStarted = false;
+                    }
+                    logNative("本地服务启动失败：" + error.getMessage());
                 }
             }
         });

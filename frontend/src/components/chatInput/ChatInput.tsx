@@ -211,7 +211,12 @@ const acceptFiles = (files: File[]) => {
           // isComposing 不能去掉：中文输入法选词时按回车只是确认候选词，不该发送。
           enterKeyHint={enterKey === 'send' ? 'send' : 'enter'}
           onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+            // keyCode 229 是多数输入法「正在合成」时的占位键值，光看 isComposing 不够
+            if (
+              event.key !== 'Enter' ||
+              event.nativeEvent.isComposing ||
+              event.nativeEvent.keyCode === 229
+            ) {
               return
             }
             const withModifier = event.ctrlKey || event.metaKey
