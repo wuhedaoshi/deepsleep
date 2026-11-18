@@ -128,6 +128,7 @@ export const zh = {
   backupNewerVersion: '文件版本过新，请升级后再导入',
   backupInvalidVersion: '文件版本无效，无法导入',
   backupIncomplete: '文件内容不完整，无法导入',
+  backupTooLarge: '导出内容过大（超过单个压缩包上限），请分批导出',
   backupInvalidBranches: '文件中的消息分支已损坏，无法导入',
   backupInvalidFiles: '文件中的附件数据已损坏，无法导入',
   settingsEnterKey: '回车键',

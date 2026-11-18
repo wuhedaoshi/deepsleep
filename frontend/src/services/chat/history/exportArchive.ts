@@ -31,7 +31,13 @@ export type ChunkSink = (chunk: Uint8Array<ArrayBuffer>) => void | Promise<void>
 
 type Json = Record<string, unknown>
 
-const iso = (value: number): string => new Date(value).toISOString()
+const iso = (value: number): string => {
+  // 官方 schema 要求 `YYYY-MM-DDTHH:mm:ssZ`；NaN / 越界时间会写成 "Invalid Date"，整包被拒
+  if (!Number.isFinite(value) || value < 0 || value > 253_402_300_799_000) {
+    throw new BackupError('backupIncomplete')
+  }
+  return new Date(value).toISOString()
+}
 
 const totalTokens = (message: AssistantMessage): number => {
   const usage = message.usage
@@ -61,7 +67,9 @@ const messageStatus = (message: Message): string => {
 }
 
 /** 归档里附件路径由会话 id 与附件 id 拼成；名字里的斜杠必须先抹平。 */
-const safeName = (name: string): string => name.replace(/[\\/]/g, '_') || 'file'
+// 只保留安全字符：路径分隔符、Windows 保留符号、前导点一律替换，避免路径穿越
+const safeName = (name: string): string =>
+    name.replace(/[\\/:*?"<>|]/g, '_').replace(/\.{2,}/g, '_').replace(/^\.+/, '_').slice(0, 80) || 'file'
 
 const attachmentPath = (sessionId: string, fileId: string, name: string): string =>
   `chat_sessions/${sessionId}_files/${fileId}_${safeName(name)}`
@@ -193,6 +201,50 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
 }
 
 /**
+ * 拓扑排序：父节点一定排在子节点之前。
+ *
+ * 官方导入器按 id 升序逐条处理，父 id 比子 id 大时会找不到父节点、整包判为损坏。
+ * 本地消息数组的顺序没有这个保证（重新生成、切分支都会打乱），所以导出前统一重排。
+ */
+const topologicalOrder = (session: Session): Message[] => {
+  const children = new Map<string, Message[]>()
+  const roots: Message[] = []
+  for (const message of session.messages) {
+    const parentId = message.parentId
+    if (parentId === null || parentId === undefined) {
+      roots.push(message)
+      continue
+    }
+    const list = children.get(parentId)
+    if (list) {
+      list.push(message)
+    } else {
+      children.set(parentId, [message])
+    }
+  }
+  const ordered: Message[] = []
+  const queue: Message[] = [...roots]
+  let head = 0
+  while (head < queue.length) {
+    const message = queue[head]
+    head += 1
+    ordered.push(message)
+    const kids = children.get(message.id)
+    if (kids) {
+      for (const kid of kids) {
+        queue.push(kid)
+      }
+    }
+  }
+  // 走不完说明有环或父缺失——前面已经校验过，这里只是兜底
+  if (ordered.length !== session.messages.length) {
+    throw new BackupError('backupIncomplete')
+  }
+  // 排序只用于编号；回填一份按 id 顺序排列的数组便于对照（调用方按返回顺序写 JSON）
+  return ordered
+}
+
+/**
  * 导出前的结构校验：脏数据不能写成「看起来合法」的归档。
  *
  * 官方导入器对分支的要求是「每条消息的父存在、根必须唯一、无环」。
@@ -262,14 +314,15 @@ const sessionJson = (raw: Session): { json: Json; files: { id: string; name: str
   const session = normalizeSession(raw)
   assertTreeExportable(session)
   const files: { id: string; name: string }[] = []
-  // 官方用整数 id，本地是字符串（新会话是 uuid），所以按数组顺序重编号。
-  // **必须建映射**：分支靠 parent_id 表达，若按「上一条就是父」串成直线，
-  // 重新生成产生的兄弟分支会被挂到错误父节点上，导出即失真。
+  // 官方用整数 id，本地是字符串（新会话是 uuid）。编号顺序**必须保证父在子之前**：
+  // 官方导入器按 id 升序处理，父 id 更大时会找不到父节点而整包失败。
+  // 所以先做拓扑排序（根 → 子），再按这个顺序编号。
+  const ordered = topologicalOrder(session)
   const idOf = new Map<string, number>()
-  session.messages.forEach((message, index) => {
+  ordered.forEach((message, index) => {
     idOf.set(message.id, index + 1)
   })
-  const messages = session.messages.map((message, index): Json => {
+  const messages = ordered.map((message, index): Json => {
     const id = index + 1
     const localParent = message.parentId
     const parentId = localParent === null || localParent === undefined ? null : (idOf.get(localParent) ?? null)
@@ -400,6 +453,12 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
     // 图片本来就是压缩格式，过一遍 deflate 只是白烧 CPU。
     const stream = new ZipPassThrough(name)
     zip.add(stream)
+    // 空文件也必须走一次 push(…, true)：否则这个条目永远不结束，整个 ZIP 3 会在收尾时残缺
+    if (blob.size === 0) {
+      stream.push(new Uint8Array(0), true)
+      await check()
+      return
+    }
     for (let at = 0; at < blob.size; at += SLICE) {
       const end = Math.min(at + SLICE, blob.size)
       const bytes = new Uint8Array(await blob.slice(at, end).arrayBuffer())
@@ -410,10 +469,23 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
 
   await addJson('manifest.json', { export_format_version: FORMAT_VERSION })
 
+  // ZIP32 的硬上限：条目数不能到 65535（留出余量给 manifest 与索引），
+  // 单条目与总大小也不能超过 4 GiB。超了 aborted 出来的包是坏的，所以提前拒绝。
+  const MAX_ENTRIES = 65_000
+  const MAX_TOTAL_BYTES = 4_000_000_000
+  let entryCount = 1
+  let totalBytes = 0
+
   const index: Json[] = []
   for await (const session of source.sessions) {
     const { json, files } = sessionJson(session)
+    const sessionBytes = JSON.stringify(json).length
+    totalBytes += sessionBytes
+    if (entryCount + files.length + 2 > MAX_ENTRIES || totalBytes > MAX_TOTAL_BYTES) {
+      throw new BackupError('backupTooLarge')
+    }
     await addJson(`chat_sessions/${session.id}.json`, json)
+    entryCount += 1
     index.push({
       id: session.id,
       title: session.title,
@@ -432,7 +504,12 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
       if (blob === undefined) {
         continue
       }
+      if (entryCount + 1 > MAX_ENTRIES || totalBytes + blob.size > MAX_TOTAL_BYTES) {
+        throw new BackupError('backupTooLarge')
+      }
       await addBlob(attachmentPath(session.id, file.id, file.name), blob)
+      entryCount += 1
+      totalBytes += blob.size
     }
   }
   // 索引最后写：官方与旧版导入器都要求会话 JSON 早于它。
