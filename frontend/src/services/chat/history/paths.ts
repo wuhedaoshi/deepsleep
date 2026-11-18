@@ -68,3 +68,9 @@ export const parseAttachmentPath = (
   }
   return { sessionId, tail: matched[2] }
 }
+/**
+ * 本地 v4 导出用的附件条目名：`chat_sessions/{sessionId}_files/{fileId}_{name}`。
+ * 与 v3 的 `attachmentEntryPath` 规则相同，单独命名是为了让导入端意图更清楚。
+ */
+export const attachmentPathOf = (sessionId: string, fileId: string, name: string): string =>
+  attachmentEntryPath(sessionId, fileId, name)

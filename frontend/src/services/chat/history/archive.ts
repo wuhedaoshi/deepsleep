@@ -5,7 +5,7 @@
  * 真正的正文按会话逐个解压，内存里只留当前这一个。
  */
 import { BackupError } from './errors.js'
-import { parseAttachmentPath, parseSessionPath, readSessionId } from './paths.js'
+import { attachmentPathOf, parseAttachmentPath, parseSessionPath, readSessionId, safePathSegment, sessionFilesDir } from './paths.js'
 import { sessionFromArchive, type ArchiveFormat } from './toLocal.js'
 import { ZipArchive, ZipError, type ZipSource } from './zip.js'
 
@@ -155,6 +155,16 @@ export class HistoryArchive {
    * 为什么不从文件名拆 id：附件 id 里可能有下划线（`f_a`），懒匹配会截成 `f`，
    * 之后用会话 JSON 里的 `f_a` 查不到，原件就丢了。官方也是用 `export_path` 建索引的。
    */
+  /**
+   * 会话 JSON 声明之后，把「条目路径」绑定到「fileId」。
+   *
+   * 两条来源：
+   * - 官方 v3：`FILE.export_path` 就是条目路径，精确匹配。
+   * - 本地 v4：消息里没有 `fragments`，只有 `message.files[]`，按旧命名约定
+   *   `chat_sessions/{sessionId}_files/{fileId}_{name}` 拼路径再匹配（v4 导出用的就是这个规则）。
+   *
+   * 为什么不从文件名拆 id：附件 id 里可能有下划线（`f_a`），懒匹配会截成 `f`。
+   */
   private bindFiles(sessionId: string, raw: unknown): void {
     if (raw === null || typeof raw !== 'object') {
       return
@@ -163,9 +173,38 @@ export class HistoryArchive {
     if (!Array.isArray(messages)) {
       return
     }
+    const bind = (fileId: string, path: string): void => {
+      const attachment = this.attachmentByKey.get(path.normalize('NFC'))
+      if (attachment === undefined) {
+        return
+      }
+      ;(attachment as { id: string }).id = fileId
+      this.boundFiles.set(`${sessionId}/${fileId}`, attachment)
+    }
     for (const message of messages) {
       if (message === null || typeof message !== 'object') {
         continue
+      }
+      // 本地 v4：按 message.files 与旧约定绑定
+      const files = (message as { files?: unknown }).files
+      if (Array.isArray(files)) {
+        for (const entry of files) {
+          if (entry === null || typeof entry !== 'object') {
+            continue
+          }
+          const file = entry as { id?: unknown; name?: unknown; serverId?: unknown }
+          if (typeof file.id !== 'string') {
+            continue
+          }
+          const guessed = attachmentPathOf(sessionId, file.id, typeof file.name === 'string' ? file.name : '')
+          bind(file.id, guessed)
+          // 老归档的登记名可能是 `file.id + '_' + 原名`，两种都试
+          for (const candidate of this.attachmentsBySession.get(sessionId) ?? []) {
+            if (candidate.path.startsWith(`${sessionFilesDir(sessionId)}${safePathSegment(file.id)}_`)) {
+              bind(file.id, candidate.path)
+            }
+          }
+        }
       }
       const fragments = (message as { fragments?: unknown }).fragments
       if (!Array.isArray(fragments)) {
@@ -187,13 +226,7 @@ export class HistoryArchive {
           if (typeof file.id !== 'string' || typeof file.export_path !== 'string') {
             continue
           }
-          const attachment = this.attachmentByKey.get(file.export_path.normalize('NFC'))
-          if (attachment === undefined) {
-            continue
-          }
-          // 绑定：id 以会话 JSON 为准，路径以条目名为准
-          (attachment as { id: string }).id = file.id
-          this.boundFiles.set(`${sessionId}/${file.id}`, attachment)
+          bind(file.id, file.export_path)
         }
       }
     }
