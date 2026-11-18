@@ -38,6 +38,8 @@ export type UserMessage = MessageBranch & {
   content: string
   files: FileAttachment[]
   createdAt: number
+  /** 从官方归档导入时原样保留的片段（FILE 条目的 width/height 等本地不建模的字段靠它还原） */
+  archivedFragments?: unknown[]
 }
 
 /** 思考块：thinking_delta 累积，签名随 signature_delta 到达；历史轮次的思考服务端会丢弃，不回传 */
@@ -88,6 +90,15 @@ export type AssistantMessage = MessageBranch & {
   status: ReplyStatus
   /** 可识别的内容块按接收顺序排列；续写产生的块追加在已有块之后 */
   blocks: ReplyBlock[]
+  /**
+   * 从官方归档导入时原样保留的片段数组。
+   *
+   * 为什么需要：本地块类型只覆盖 thinking / text / 工具调用，官方还有
+   * TIP、CONTENT_RISK、PARTIAL_FILE_READ、TOOL_IMAGE_SEARCH，以及工具状态
+   * （WIP / FAILED / NO_RESULT）与 snippet / stage_id 等字段。不留存这些，
+   * 导入再导出会静默丢内容（实测 10 段往返只剩 5 段）。
+   */
+  archivedFragments?: unknown[]
   stopReason?: StopReason
   stopDetails?: StopDetails
   /** 最近一次请求的用量，续写后更新 */

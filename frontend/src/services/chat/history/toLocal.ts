@@ -506,6 +506,9 @@ const toUserMessage = (raw: RawMessage, mimeTypeOf: (fileId: string) => string):
       .map((fragment) => (fragment.type === 'REQUEST' ? text(fragment.content) : ''))
       .join(''),
     files: files.map((file) => ({ ...file, mimeType: mimeTypeOf(file.id) })),
+    // 与回答同理：FILE 条目的 width/height、token_usage 等字段本地不建模，
+    // 不留存就会在导出时被重建成 null（官方图床信息就丢了）
+    archivedFragments: raw.fragments,
   }
 }
 
@@ -529,6 +532,9 @@ const toAssistantMessage = (raw: RawMessage): AssistantMessage => {
     status: STATUS_BY_ARCHIVE[status] ?? fail(),
     ...(filtered ? { stopReason: 'refusal' as const } : {}),
     blocks: kept,
+    // 原样保留官方片段：本地块模型覆盖不到的类型（TIP / CONTENT_RISK /
+    // PARTIAL_FILE_READ / TOOL_IMAGE_SEARCH）与字段（工具状态、snippet、stage_id）导出时要能还回去
+    archivedFragments: raw.fragments,
   }
 }
 
