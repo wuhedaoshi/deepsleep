@@ -1,5 +1,28 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.3.12（实验线：修「压缩在部分机型上不起作用」）
+
+三个叠加的原因，全都不是机型性能问题：
+
+1. **`usage` 缺一个字段就整体丢弃**：`parseEvent` 原来要求四个用量字段全是数字，少一个就得到
+   `undefined`；而判定遇到 `undefined` 直接判「不压」。现在只要有一个数值字段就接受，缺的补 0 并记下字段名。
+2. **导入的历史没有 usage**：官方归档导入的 assistant 消息不带 `usage`，导致这些会话的自动压缩永久失效。
+   现在 `usage` 缺失时**复用字符估算**兜底，并标注 `source=estimate`。
+3. **窗口写死 1M、没有设置项**：用户把窗口当 300k 或 1.4M 用，代码从未读取。
+   现在窗口单一来源 `resolveWindow(model, override)`，设置里可填任意值（留空 = 模型默认，1.4M 写作 `1.4m` 也认）。
+
+配套改动：
+
+- 判定改为可解释的 `evaluateCompaction`：返回 `pressure / threshold / source / triggered / reason`
+  （`below-threshold` / `nothing-to-compact` / `already-compacted` / `no-estimate`）
+- 防重复压缩从「比时钟」改成「比最后轮次 id」，并兼容旧存档
+- 压缩失败不再静默：记录原因，发送照常继续
+- 上下文用量仪表复用同一判定，tooltip 显示压力、阈值与来源
+- 阈值边界统一为 **严格大于**（`pressure > threshold` 才压），仪表与判定同口径
+
+验收脚本 `frontend/tools/verify-compaction.mjs`（本地跑，不访问真实 API）：
+窗口 300k → 阈值 201,696 / 1.4M → 1,120,000；阈值边界、部分 usage、缺 usage 走估算、
+压后不重复、切分支隔离、设置持久化、store 集成 共 9 组断言全过。
 ## 1.3.11（实验线：并入稳定线全部修复 + 上下文压缩）
 
 - 并入 1.2.12 的全部修复：白屏根因（`var()` 内 `dvh` 导致 height=auto）、导入官方归档保留分叉、回车键行为可设置、上传失败归因、日志系统完善与审计修正
