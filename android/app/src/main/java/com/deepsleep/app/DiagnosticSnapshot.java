@@ -300,14 +300,102 @@ final class DiagnosticSnapshot {
                 + "rootDisplay:cs?cs.display:null,"
                 + "rootVisibility:cs?cs.visibility:null,"
                 + "rootOpacity:cs?cs.opacity:null,"
-                + "rootRect:root?(function(r){return Math.round(r.width)+'x'+Math.round(r.height)})(root.getBoundingClientRect()):null"
+                + "rootRect:root?(function(r){return Math.round(r.width)+'x'+Math.round(r.height)})(root.getBoundingClientRect()):null,"
+                // 地标：找第一个「有文字、面积够大、在视口内」的元素，返回它的矩形。
+                // 全屏墨量在欢迎页上区分不出「画了」与「没画」，必须量 DOM 指定位置的像素。
+                + "landmark:(function(){"
+                + "var all=document.querySelectorAll('h1,h2,h3,p,span,div,button');"
+                + "for(var i=0;i<all.length;i++){var el=all[i];"
+                + "var t=(el.textContent||'').trim();if(t.length<2||t.length>60)continue;"
+                + "var r=el.getBoundingClientRect();"
+                + "if(r.width<40||r.height<10)continue;"
+                + "if(r.top<0||r.bottom>window.innerHeight)continue;"
+                + "var c=getComputedStyle(el);if(c.visibility!=='visible'||c.display==='none')continue;"
+                + "return {x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),tag:el.tagName.toLowerCase()};}"
+                + "return null;})()"
                 + "})}catch(e){return '" + "{\"err\":\"probe\"}" + "'}})()";
         web.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
-                sink.write("[snap] ⑦ 页面: " + (value == null ? "null" : value.replace("\\", "")));
+                String json = value == null ? "null" : value.replace("\\", "").replace("\"", "\"");
+                sink.write("[snap] ⑦ 页面: " + json);
+                measureLandmark(json);
             }
         });
+    }
+
+    /**
+     * 量「DOM 说有字的那块区域」到底有没有墨。
+     *
+     * 为什么需要它：欢迎页几乎全白，全屏非白千分比在「正常渲染」与「整片没画」之间
+     * 给出的是同一量级（7‰ vs 0‰），根本区分不了。这里改为按 DOM 给的矩形去抓像素，
+     * 报出该区域的最小亮度与标准差：
+     *   - 有字 → 标准差不小、最小亮度远低于 250
+     *   - 没画 → 整块接近纯白，标准差趋近 0
+     */
+    private void measureLandmark(String pageJson) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pageJson == null) {
+            return;
+        }
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(pageJson);
+            org.json.JSONObject landmark = root.optJSONObject("landmark");
+            if (landmark == null) {
+                sink.write("[snap] ⑧ 地标: 页面上没有可用的文字元素");
+                return;
+            }
+            // DOM 坐标是 CSS 像素，要按 web 的缩放换算到视图像素
+            float scaleX = web.getWidth() / (float) Math.max(1, root.optDouble("vw", web.getWidth()));
+            float scaleY = web.getHeight() / (float) Math.max(1, root.optDouble("vh", web.getHeight()));
+            int[] location = new int[2];
+            web.getLocationInWindow(location);
+            int x = location[0] + Math.round((float) landmark.optDouble("x") * scaleX);
+            int y = location[1] + Math.round((float) landmark.optDouble("y") * scaleY);
+            int w = Math.max(4, Math.round((float) landmark.optDouble("w") * scaleX));
+            int h = Math.max(4, Math.round((float) landmark.optDouble("h") * scaleY));
+            final String tag = landmark.optString("tag", "?");
+            final Bitmap shot = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            PixelCopy.request(activity.getWindow(), new android.graphics.Rect(x, y, x + w, y + h), shot,
+                    new PixelCopy.OnPixelCopyFinishedListener() {
+                        @Override
+                        public void onPixelCopyFinished(int copyResult) {
+                            if (copyResult != PixelCopy.SUCCESS) {
+                                sink.write("[snap] ⑧ 地标(" + tag + "): 抓取失败 code=" + copyResult);
+                                shot.recycle();
+                                return;
+                            }
+                            long sum = 0;
+                            long sumSq = 0;
+                            int count = 0;
+                            int min = 255;
+                            for (int py = 0; py < shot.getHeight(); py += 2) {
+                                for (int px = 0; px < shot.getWidth(); px += 2) {
+                                    int color = shot.getPixel(px, py);
+                                    int lum = (Color.red(color) + Color.green(color) + Color.blue(color)) / 3;
+                                    sum += lum;
+                                    sumSq += (long) lum * lum;
+                                    count += 1;
+                                    if (lum < min) {
+                                        min = lum;
+                                    }
+                                }
+                            }
+                            shot.recycle();
+                            if (count == 0) {
+                                sink.write("[snap] ⑧ 地标(" + tag + "): 采样为空");
+                                return;
+                            }
+                            double mean = sum / (double) count;
+                            double variance = Math.max(0, sumSq / (double) count - mean * mean);
+                            int std = (int) Math.round(Math.sqrt(variance));
+                            sink.write("[snap] ⑧ 地标(" + tag + " " + w + "x" + h + "): minLum=" + min
+                                    + " std=" + std
+                                    + (min >= 250 && std <= 2 ? "（该区域纯白 → 这块没画出来）" : "（有墨）"));
+                        }
+                    }, handler);
+        } catch (Exception error) {
+            sink.write("[snap] ⑧ 地标: 解析失败 " + error.getClass().getSimpleName());
+        }
     }
 
     private static int nonWhitePermille(Bitmap bitmap) {
