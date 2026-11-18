@@ -13,6 +13,7 @@
  */
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
 import { normalizeSession } from '../branches.js'
+import { BackupError } from './errors.js'
 import { ownedBytes } from './zip.js'
 
 const FORMAT_VERSION = 3
@@ -191,9 +192,60 @@ const replyFragments = (blocks: readonly ReplyBlock[]): Json[] => {
   return fragments
 }
 
+/**
+ * 导出前的结构校验：脏数据不能写成「看起来合法」的归档。
+ *
+ * 官方导入器对分支的要求是「每条消息的父存在、根必须唯一、无环」。
+ * 本地数据可以从 v4 归档或旧版本迁进来，不保证满足这些前提；
+ * 与其导出一个导入必失败的包，不如在这里明确报错。
+ */
+const assertTreeExportable = (session: Session): void => {
+  const ids = new Set<string>()
+  for (const message of session.messages) {
+    if (ids.has(message.id)) {
+      throw new BackupError('backupIncomplete')
+    }
+    ids.add(message.id)
+  }
+  for (const message of session.messages) {
+    const parentId = message.parentId
+    if (parentId !== null && parentId !== undefined && !ids.has(parentId)) {
+      // 父不存在：以前会被静默当成根节点，导出后成了多个根
+      throw new BackupError('backupIncomplete')
+    }
+  }
+  // 环检测：迭代标记，每个节点最多访问一次
+  const state = new Map<string, number>()
+  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  for (const message of session.messages) {
+    if (state.get(message.id) === 2) {
+      continue
+    }
+    const path: string[] = []
+    let cursor: Message | undefined = message
+    while (cursor !== undefined) {
+      const seen = state.get(cursor.id)
+      if (seen === 2) {
+        break
+      }
+      if (seen === 1) {
+        throw new BackupError('backupIncomplete')
+      }
+      state.set(cursor.id, 1)
+      path.push(cursor.id)
+      const parentId: string | null | undefined = cursor.parentId
+      cursor = parentId === null || parentId === undefined ? undefined : byId.get(parentId)
+    }
+    for (const id of path) {
+      state.set(id, 2)
+    }
+  }
+}
+
 const sessionJson = (raw: Session): { json: Json; files: { id: string; name: string }[] } => {
   // 升级前保存的线性会话没有分支字段：先补齐，否则导出会写出多个根节点，官方导入器直接拒绝。
   const session = normalizeSession(raw)
+  assertTreeExportable(session)
   const files: { id: string; name: string }[] = []
   // 官方用整数 id，本地是字符串（新会话是 uuid），所以按数组顺序重编号。
   // **必须建映射**：分支靠 parent_id 表达，若按「上一条就是父」串成直线，
@@ -274,6 +326,11 @@ const findCurrentLeaf = (session: Session, idOf: Map<string, number>): number =>
     const next = nextId === undefined ? undefined : byId.get(nextId)
     if (next === undefined) {
       return idOf.get(cursor.id) ?? session.messages.length
+    }
+    // 选中的子节点必须真的以当前节点为父；否则 current_message_id 会指到另一条分支上，
+    // 官方导入器按这条路径还原就会落到错误的根。
+    if (next.parentId !== cursor.id) {
+      throw new BackupError('backupIncomplete')
     }
     cursor = next
   }
