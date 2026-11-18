@@ -277,3 +277,32 @@ export const logLayout = (tag: string) => {
     // 量不出来不影响主流程
   }
 }
+/**
+ * 九宫格命中测试：把屏幕上 3×3 个点命中的元素标签与文本记下来。
+ *
+ * 用途：白屏时回答「屏幕上到底是不是我们的界面」。原生侧只能量像素，
+ * 分不清「白色的是我们的空态页面」和「白色的是没画出来的表面」。
+ */
+export const logGrid = (tag: string) => {
+  try {
+    const points: string[] = []
+    for (const y of [0.2, 0.5, 0.8]) {
+      for (const x of [0.25, 0.5, 0.75]) {
+        const element = document.elementFromPoint(
+          Math.round(window.innerWidth * x),
+          Math.round(window.innerHeight * y)
+        )
+        if (element === null) {
+          points.push('null')
+          continue
+        }
+        const className = typeof element.className === 'string' ? element.className : ''
+        const text = (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 14)
+        points.push(`${element.tagName.toLowerCase()}.${className.split(' ')[0] || '-'}${text ? '「' + text + '」' : ''}`)
+      }
+    }
+    push('info', 'layout', `grid ${tag}`, { points: points.join(' | ') })
+  } catch {
+    // 量不出来不影响主流程
+  }
+}

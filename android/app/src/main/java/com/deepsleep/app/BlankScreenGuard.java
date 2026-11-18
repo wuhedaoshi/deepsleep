@@ -36,10 +36,6 @@ final class BlankScreenGuard {
         /** 写一行日志——必须进日志文件，否则等于没记 */
         void log(String line);
     }
-
-    /** 采样点（相对高度） */
-    private static final float[] SAMPLE_RATIOS = {0.25f, 0.5f, 0.75f};
-    private static final int SAMPLE_SIZE = 48;
     /** 非白判定：像素亮度低于这个值算「有内容」 */
     private static final int CONTENT_LEVEL = 240;
 
@@ -130,53 +126,41 @@ final class BlankScreenGuard {
                 });
     }
 
-    /** 抓三块窗口像素，返回「有内容像素」的千分比 */
+    /** 抓整个窗口并缩到 64 宽再统计：三点采样太稀疏，会漏掉欢迎页那种大片留白 */
     private void sampleScreen(final SampleCallback callback) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             callback.onSample(0, true);
             return;
         }
-        final int total = SAMPLE_RATIOS.length;
-        final int[] remaining = {total};
-        final int[] contentPixels = {0};
-        final int[] sampled = {0};
-        final boolean[] failed = {false};
-        for (final float ratio : SAMPLE_RATIOS) {
-            final int[] location = new int[2];
-            web.getLocationInWindow(location);
-            int x = Math.max(0, location[0] + web.getWidth() / 2 - SAMPLE_SIZE / 2);
-            int y = Math.max(0, location[1] + (int) (web.getHeight() * ratio) - SAMPLE_SIZE / 2);
-            final Bitmap shot = Bitmap.createBitmap(SAMPLE_SIZE, SAMPLE_SIZE, Bitmap.Config.ARGB_8888);
-            try {
-                PixelCopy.request(activity.getWindow(),
-                        new android.graphics.Rect(x, y, x + SAMPLE_SIZE, y + SAMPLE_SIZE), shot,
-                        new PixelCopy.OnPixelCopyFinishedListener() {
-                            @Override
-                            public void onPixelCopyFinished(int copyResult) {
-                                if (copyResult != PixelCopy.SUCCESS) {
-                                    failed[0] = true;
-                                } else {
-                                    int[] counts = countContent(shot);
-                                    contentPixels[0] += counts[0];
-                                    sampled[0] += counts[1];
-                                }
-                                shot.recycle();
-                                remaining[0] -= 1;
-                                if (remaining[0] == 0) {
-                                    int permille =
-                                            sampled[0] == 0 ? 0 : contentPixels[0] * 1000 / sampled[0];
-                                    callback.onSample(permille, failed[0]);
-                                }
+        int[] location = new int[2];
+        web.getLocationInWindow(location);
+        int width = Math.max(1, web.getWidth());
+        int height = Math.max(1, web.getHeight());
+        final Bitmap shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        try {
+            PixelCopy.request(activity.getWindow(),
+                    new android.graphics.Rect(location[0], location[1],
+                            location[0] + width, location[1] + height), shot,
+                    new PixelCopy.OnPixelCopyFinishedListener() {
+                        @Override
+                        public void onPixelCopyFinished(int copyResult) {
+                            int permille = 0;
+                            boolean failed = copyResult != PixelCopy.SUCCESS;
+                            if (!failed) {
+                                int smallHeight = Math.max(1,
+                                        64 * shot.getHeight() / Math.max(1, shot.getWidth()));
+                                Bitmap small = Bitmap.createScaledBitmap(shot, 64, smallHeight, true);
+                                int[] counts = countContent(small);
+                                small.recycle();
+                                permille = counts[1] == 0 ? 0 : counts[0] * 1000 / counts[1];
                             }
-                        }, handler);
-            } catch (Exception error) {
-                shot.recycle();
-                failed[0] = true;
-                remaining[0] -= 1;
-                if (remaining[0] == 0) {
-                    callback.onSample(0, true);
-                }
-            }
+                            shot.recycle();
+                            callback.onSample(permille, failed);
+                        }
+                    }, handler);
+        } catch (Exception error) {
+            shot.recycle();
+            callback.onSample(0, true);
         }
     }
 
