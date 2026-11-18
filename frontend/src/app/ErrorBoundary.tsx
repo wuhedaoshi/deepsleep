@@ -21,10 +21,15 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // 崩溃栈里可能夹带用户数据：只留自有代码的文件:行，不记原始 message
     logError('ui', 'render crashed', {
-      message: error.message,
-      stack: (error.stack ?? '').slice(0, 800),
-      componentStack: (info.componentStack ?? '').slice(0, 800),
+      summary: errorSummary(error),
+      frames: (error.stack ?? '')
+        .split('\n')
+        .filter((line) => line.includes('/src/'))
+        .map((line) => line.trim().replace(/^at\s+/, '').slice(0, 80))
+        .slice(0, 5),
+      component: (info.componentStack ?? '').split('\n')[1]?.trim().slice(0, 60) ?? '',
     })
   }
 

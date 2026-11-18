@@ -59,7 +59,7 @@ const classifyPreparingFailure = (error: unknown, files: number): TranslationMes
   if (files > 0) {
     return describeUploadError(error)
   }
-  const message = error instanceof Error ? error.message : String(error)
+  const message = errorSummary(error)
   if (/is not a function|is not iterable/i.test(message)) {
     return { key: 'sendFailedWebView' }
   }
@@ -1282,10 +1282,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
           reply = settleReply(reply, 'done', Date.now())
         } else if (error instanceof ApiError) {
-          logError('chat', '请求失败', { kind: error.kind, status: error.status, message: error.message })
+          logError('chat', '请求失败', { kind: error.kind, status: error.status, summary: errorSummary(error) })
           reply = settleReply(reply, 'error', Date.now(), {
             kind: error.kind,
-            message: error.message,
+            message: errorSummary(error),
             status: error.status,
             // 图片格式不支持这类错误，给中文说明；其余沿用服务端原文
             localMessage:

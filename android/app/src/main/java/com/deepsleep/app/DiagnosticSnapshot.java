@@ -53,6 +53,21 @@ final class DiagnosticSnapshot {
     private int preDrawCount = 0;
     private long lastDrawAt = 0;
     private boolean listenersAttached = false;
+    /** 保存真实实例：removeOnDrawListener(null) 是无效调用 */
+    private final ViewTreeObserver.OnDrawListener drawListener = new ViewTreeObserver.OnDrawListener() {
+        @Override
+        public void onDraw() {
+            drawCount += 1;
+            lastDrawAt = System.currentTimeMillis();
+        }
+    };
+    private final ViewTreeObserver.OnPreDrawListener preDrawListener = new ViewTreeObserver.OnPreDrawListener() {
+        @Override
+        public boolean onPreDraw() {
+            preDrawCount += 1;
+            return true;
+        }
+    };
     /** 销毁后异步回调一律丢弃 */
     private volatile boolean disposedFlag = false;
 
@@ -73,21 +88,8 @@ final class DiagnosticSnapshot {
             return;
         }
         try {
-            web.getViewTreeObserver().addOnDrawListener(new ViewTreeObserver.OnDrawListener() {
-                @Override
-                public void onDraw() {
-                    drawCount += 1;
-                    lastDrawAt = System.currentTimeMillis();
-                }
-            });
-            web.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
-                @Override
-                public boolean onPreDraw() {
-                    preDrawCount += 1;
-                    // 必须返回 true，否则会吞掉绘制
-                    return true;
-                }
-            });
+            web.getViewTreeObserver().addOnDrawListener(drawListener);
+            web.getViewTreeObserver().addOnPreDrawListener(preDrawListener);
             listenersAttached = true;
         } catch (Throwable error) {
             sink.write("[snap] 监听器挂载失败: " + error.getClass().getSimpleName());
@@ -100,7 +102,8 @@ final class DiagnosticSnapshot {
         disposedFlag = true;
         if (listenersAttached && web != null) {
             try {
-                web.getViewTreeObserver().removeOnDrawListener(null);
+                web.getViewTreeObserver().removeOnDrawListener(drawListener);
+                web.getViewTreeObserver().removeOnPreDrawListener(preDrawListener);
             } catch (Throwable ignored) {
                 // 监听器随视图销毁即可，这里只尽力而为
             }
@@ -242,6 +245,7 @@ final class DiagnosticSnapshot {
     }
 
     /** WebView 自绘到 Bitmap 的非白千分比：证明「视图本身有内容」 */
+    /** WebView 自绘到 Bitmap 的非白千分比：证明「视图本身有没有内容」。统计走后台线程。 */
     private void measureViewDraw(final String reason) {
         int width = web.getWidth();
         int height = web.getHeight();
@@ -249,7 +253,7 @@ final class DiagnosticSnapshot {
             sink.write("[snap] ⑤ 自绘: 尺寸为 0，跳过");
             return;
         }
-        Bitmap bitmap = null;
+        final Bitmap bitmap;
         try {
             float scale = Math.min(1f, 240f / Math.max(width, height));
             int w = Math.max(1, Math.round(width * scale));
@@ -258,52 +262,81 @@ final class DiagnosticSnapshot {
             Canvas canvas = new Canvas(bitmap);
             canvas.scale(scale, scale);
             web.draw(canvas);
-            int permille = nonWhitePermille(bitmap);
-            sink.write("[snap] ⑤ 自绘: 非白 " + permille + "‰"
-                    + (permille < 5 ? "（视图本身画不出内容）" : "（视图有内容）"));
         } catch (Throwable error) {
             sink.write("[snap] ⑤ 自绘: 失败 " + error.getClass().getSimpleName());
-        } finally {
-            if (bitmap != null) {
-                bitmap.recycle();
-            }
+            return;
         }
+        STATS.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    int permille = nonWhitePermille(bitmap);
+                    sink.write("[snap] ⑤ 自绘: 非白 " + permille + "‰"
+                            + (permille < 5 ? "（视图本身画不出内容）" : "（视图有内容）"));
+                } finally {
+                    bitmap.recycle();
+                }
+            }
+        });
     }
 
     /** 抓窗口真实像素：证明「屏幕上有什么」 */
+    /** 抓窗口真实像素：证明「屏幕上有什么」。限流 + 统计走后台。 */
     private void measureScreen(final String reason) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             sink.write("[snap] ⑥ 屏幕: PixelCopy 需要 Android 8+");
             return;
         }
+        if (!capturing.compareAndSet(false, true)) {
+            sink.write("[snap] ⑥ 屏幕: 上一次抓屏未结束，跳过（避免内存峰值）");
+            return;
+        }
         int[] location = new int[2];
         web.getLocationInWindow(location);
-        final int width = Math.max(1, web.getWidth());
-        final int height = Math.max(1, web.getHeight());
-        final Bitmap shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int width = Math.max(1, web.getWidth());
+        int height = Math.max(1, web.getHeight());
+        final Bitmap shot;
+        try {
+            shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        } catch (Throwable error) {
+            capturing.set(false);
+            sink.write("[snap] ⑥ 屏幕: 分配失败 " + error.getClass().getSimpleName());
+            return;
+        }
         try {
             PixelCopy.request(activity.getWindow(),
                     new android.graphics.Rect(location[0], location[1],
                             location[0] + width, location[1] + height), shot,
                     new PixelCopy.OnPixelCopyFinishedListener() {
                         @Override
-                        public void onPixelCopyFinished(int copyResult) {
-                            if (copyResult != PixelCopy.SUCCESS) {
-                                sink.write("[snap] ⑥ 屏幕: 抓取失败 code=" + copyResult + "（不能据此判白）");
-                                shot.recycle();
-                                return;
-                            }
-                            int smallHeight = Math.max(1, 64 * shot.getHeight() / Math.max(1, shot.getWidth()));
-                            Bitmap small = Bitmap.createScaledBitmap(shot, 64, smallHeight, true);
-                            int permille = nonWhitePermille(small);
-                            small.recycle();
-                            shot.recycle();
-                            sink.write("[snap] ⑥ 屏幕: 非白 " + permille + "‰"
-                                    + (permille < 5 ? "（屏幕没有内容）" : "（屏幕有内容）"));
+                        public void onPixelCopyFinished(final int copyResult) {
+                            STATS.execute(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        if (copyResult != PixelCopy.SUCCESS) {
+                                            sink.write("[snap] ⑥ 屏幕: 抓取失败 code=" + copyResult
+                                                    + "（不能据此判白）");
+                                            return;
+                                        }
+                                        int smallHeight = Math.max(1,
+                                                64 * shot.getHeight() / Math.max(1, shot.getWidth()));
+                                        Bitmap small = Bitmap.createScaledBitmap(shot, 64, smallHeight, true);
+                                        int permille = nonWhitePermille(small);
+                                        small.recycle();
+                                        sink.write("[snap] ⑥ 屏幕: 非白 " + permille + "‰"
+                                                + (permille < 5 ? "（屏幕没有内容）" : "（屏幕有内容）"));
+                                    } finally {
+                                        shot.recycle();
+                                        capturing.set(false);
+                                    }
+                                }
+                            });
                         }
                     }, handler);
         } catch (Exception error) {
             shot.recycle();
+            capturing.set(false);
             sink.write("[snap] ⑥ 屏幕: 异常 " + error.getClass().getSimpleName());
         }
     }
@@ -343,6 +376,9 @@ final class DiagnosticSnapshot {
         web.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
+                if (disposedFlag) {
+                    return;
+                }
                 String json = unwrapJsString(value);
                 sink.write("[snap] ⑦ 页面: " + json);
                 measureLandmark(json);

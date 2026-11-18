@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
     /** 白屏诊断与自动恢复 */
     private BlankScreenGuard blankGuard;
     /** 渲染进程重建次数：只在本进程内累计，页面正常加载后归零（不能持久化，否则装一次就永久用完） */
-    private int rendererRebuilds = 0;
+    private static int rendererRebuilds = 0;
     /** 一次性诊断快照（白屏定案用） */
     private DiagnosticSnapshot snapshot;
 

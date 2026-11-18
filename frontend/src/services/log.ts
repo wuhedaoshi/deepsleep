@@ -157,17 +157,19 @@ export const installLogHandlers = () => {
       push('error', 'window', `资源加载失败：${target.tagName ?? 'unknown'}`)
       return
     }
-    push('error', 'window', event.message || 'uncaught error', {
-      source: event.filename,
-      line: event.lineno,
-      column: event.colno,
-      stack: event.error instanceof Error ? (event.error.stack ?? '').slice(0, 600) : '',
+    push('error', 'window', 'uncaught error', {
+      kind: event.error instanceof Error ? errorSummary(event.error) : 'unknown',
+      frames: (event.error instanceof Error ? (event.error.stack ?? '') : '')
+        .split('\n')
+        .filter((line) => line.includes('/src/'))
+        .map((line) => line.trim().replace(/^at\\s+/, '').slice(0, 80))
+        .slice(0, 5),
     })
   })
   window.addEventListener('unhandledrejection', (event) => {
     // 同时打 console：WebChromeClient 会把 console 转进 logcat，adb 在场时能直接看
     const reason = event.reason
-    push('error', 'promise', 'unhandled rejection', reason instanceof Error ? reason.message : reason)
+    push('error', 'promise', 'unhandled rejection', errorSummary(reason))
   })
   // 这里就是接管 console.error 本身，规则要放行
   // eslint-disable-next-line no-console

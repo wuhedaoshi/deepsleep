@@ -449,10 +449,6 @@ const buildTree = (
   }
 
   // 默认选中同父下 id 最大者（与官方一致，不依赖数组顺序）
-  const idValue = (id: string): number => {
-    const parsed = Number(id)
-    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
-  }
   for (const message of ordered) {
     const parentId = message.parentId
     if (parentId === null || parentId === undefined) {
@@ -463,13 +459,17 @@ const buildTree = (
       return fail()
     }
     const selected = parent.selectedChildId
-    if (selected === undefined || idValue(message.id) > idValue(selected)) {
+    if (selected === undefined || compareIds(message.id, selected) > 0) {
       parent.selectedChildId = message.id
     }
   }
 
   // 用户停留位置：沿 current_message_id 上溯，覆盖路径上的 selectedChildId
-  const fallbackId = messages[messages.length - 1].id
+  // 缺 current_message_id 时不能取数组最后一项（顺序不保证），显式选 id 最大者
+  const fallbackId = messages.reduce(
+    (best, message) => (compareIds(message.id, best) > 0 ? message.id : best),
+    messages[0].id
+  )
   const startId =
     typeof currentId === 'number' || typeof currentId === 'string'
       ? String(currentId)
@@ -586,3 +586,22 @@ export const sessionFromArchive = (
   mimeTypeOf: (fileId: string) => string
 ): Session =>
   format === 'local' ? localSession(raw) : officialSession(raw, mimeTypeOf)
+/**
+ * 比较消息 id 的大小。
+ *
+ * 官方 id 是自增整数，但可能超出 Number 的安全范围，所以纯数字 id 先比长度再比字典序，
+ * 避免精度丢失导致「默认选中的分支」选错。
+ */
+const compareIds = (left: string, right: string): number => {
+  const numeric = /^\d+$/.test(left) && /^\d+$/.test(right)
+  if (numeric) {
+    if (left.length !== right.length) {
+      return left.length - right.length
+    }
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+  if (/^\d+$/.test(left) !== /^\d+$/.test(right)) {
+    return left.startsWith('') ? 1 : -1
+  }
+  return left < right ? -1 : left > right ? 1 : 0
+}

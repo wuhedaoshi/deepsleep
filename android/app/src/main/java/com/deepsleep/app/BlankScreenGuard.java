@@ -99,6 +99,9 @@ final class BlankScreenGuard {
     }
 
     void probe(final String reason) {
+        if (disposed) {
+            return;
+        }
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -183,6 +186,11 @@ final class BlankScreenGuard {
                     new PixelCopy.OnPixelCopyFinishedListener() {
                         @Override
                         public void onPixelCopyFinished(int copyResult) {
+                        if (disposed) {
+                            busy.set(false);
+                            shot.recycle();
+                            return;
+                        }
                             int permille = 0;
                             boolean failed = copyResult != PixelCopy.SUCCESS;
                             if (!failed) {
