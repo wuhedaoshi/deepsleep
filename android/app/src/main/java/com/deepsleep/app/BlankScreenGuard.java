@@ -194,23 +194,41 @@ final class BlankScreenGuard {
                     new PixelCopy.OnPixelCopyFinishedListener() {
                         @Override
                         public void onPixelCopyFinished(int copyResult) {
-                        if (disposed) {
-                            busy.set(false);
-                            shot.recycle();
-                            return;
-                        }
+                            if (disposed) {
+                                busy.set(false);
+                                shot.recycle();
+                                return;
+                            }
                             int permille = 0;
                             boolean failed = copyResult != PixelCopy.SUCCESS;
-                            if (!failed) {
-                                int smallHeight = Math.max(1,
-                                        64 * shot.getHeight() / Math.max(1, shot.getWidth()));
-                                Bitmap small = Bitmap.createScaledBitmap(shot, 64, smallHeight, true);
-                                int[] counts = countContent(small);
-                                small.recycle();
-                                permille = counts[1] == 0 ? 0 : counts[0] * 1000 / counts[1];
+                            Bitmap small = null;
+                            try {
+                                if (!failed) {
+                                    int smallHeight = Math.max(1,
+                                            64 * shot.getHeight() / Math.max(1, shot.getWidth()));
+                                    // 低内存时这里也可能 OOM：异步回调里抛出去会直接崩应用
+                                    small = Bitmap.createScaledBitmap(shot, 64, smallHeight, true);
+                                    int[] counts = countContent(small);
+                                    permille = counts[1] == 0 ? 0 : counts[0] * 1000 / counts[1];
+                                }
+                            } catch (Throwable error) {
+                                failed = true;
+                                permille = 0;
+                                host.log("probe: 采样失败 " + error.getClass().getSimpleName());
+                            } finally {
+                                if (small != null) {
+                                    small.recycle();
+                                }
+                                shot.recycle();
+                                if (failed) {
+                                    busy.set(false);
+                                }
                             }
-                            shot.recycle();
-                            callback.onSample(permille, failed);
+                            if (failed) {
+                                callback.onSample(0, true);
+                            } else {
+                                callback.onSample(permille, false);
+                            }
                         }
                     }, handler);
         } catch (Exception error) {
