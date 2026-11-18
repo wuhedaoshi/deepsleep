@@ -267,8 +267,15 @@ export class HistoryArchive {
       }
     }
 
-    // ③ v3 的 export_path 是权威来源，最后覆盖
+    // ③ v3 的 export_path 是权威来源，最后覆盖；**反向也权威**：
+    //    指向的条目不存在时必须清掉前面猜出来的绑定，否则「缺原件」的附件
+    //    会被显示成另一个文件的内容（导出的归档若因去重少了某件就会这样）。
     for (const entry of v3Entries) {
+      const exact = entry.exportPath.normalize('NFC')
+      if (this.attachmentByKey.get(exact) === undefined) {
+        this.boundFiles.delete(`${sessionId}/${entry.id}`)
+        continue
+      }
       bind(entry.id, entry.exportPath)
     }
   }
