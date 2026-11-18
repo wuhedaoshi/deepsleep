@@ -428,6 +428,41 @@ public class MainActivity extends Activity {
              * 原生日志的最后 N 行（默认 4000 字符）。导出的日志要同时包含
              * 前端事件与原生 onCreate/onPageFinished，否则只有一半证据。
              */
+
+            /**
+             * 写系统剪贴板。
+             *
+             * WebView 里 `navigator.clipboard.writeText` 经常直接抛 NotAllowedError
+             * （缺 clipboard-write 授权、调用链也不一定是用户手势），用户会看到「复制失败」。
+             * 走原生最稳。
+             */
+            @JavascriptInterface
+            public boolean copyToClipboard(String text) {
+                if (text == null) {
+                    return false;
+                }
+                try {
+                    final String value = text;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            android.content.ClipboardManager manager =
+                                    (android.content.ClipboardManager)
+                                            getSystemService(CLIPBOARD_SERVICE);
+                            if (manager != null) {
+                                manager.setPrimaryClip(
+                                        android.content.ClipData.newPlainText("deepsleep", value));
+                            }
+                        }
+                    });
+                    return true;
+                } catch (Throwable error) {
+                    Log.w(TAG, "copyToClipboard failed: " + error.getMessage());
+                    return false;
+                }
+            }
+
+            /** 原生日志的最后 N 个字符：导出的日志要同时含前端事件与原生生命周期 */
             @JavascriptInterface
             public String readLogTail(int maxChars) {
                 return readLogTailInternal(maxChars);
