@@ -67,12 +67,33 @@ const messageStatus = (message: Message): string => {
 }
 
 /** 归档里附件路径由会话 id 与附件 id 拼成；名字里的斜杠必须先抹平。 */
-// 只保留安全字符：路径分隔符、Windows 保留符号、前导点一律替换，避免路径穿越
+// 只保留安全字符：控制字符（含 NUL）、路径分隔符、Windows 保留符号、点段一律替换。
+// 控制字符用码点过滤而不是正则里的 \u0000-\u001f 范围（会被 lint 判为 no-control-regex）。
 const safeName = (name: string): string =>
-    name.replace(/[\\/:*?"<>|]/g, '_').replace(/\.{2,}/g, '_').replace(/^\.+/, '_').slice(0, 80) || 'file'
+  Array.from(name)
+    .map((char) => ((char.codePointAt(0) ?? 0) < 0x20 ? '_' : char))
+    .join('')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\.{2,}/g, '_')
+    .replace(/^\.+/, '_')
+    .slice(0, 80) || 'file'
+
+/**
+ * 会话 id / 附件 id 会直接进 ZIP 路径，必须先是「安全的一段路径」。
+ *
+ * 本地 v4 归档转出来的 id 不受我们控制（可能是 `../x`），拼进路径后官方导入器
+ * 会认为归档损坏、整包拒绝。这里提前拦下。
+ */
+const assertSafeId = (value: string): string => {
+  const safe = /^[A-Za-z0-9._-]+$/.test(value) && !value.includes('..') && value !== '.' && value !== ''
+  if (!safe) {
+    throw new BackupError('backupIncomplete')
+  }
+  return value
+}
 
 const attachmentPath = (sessionId: string, fileId: string, name: string): string =>
-  `chat_sessions/${sessionId}_files/${fileId}_${safeName(name)}`
+  `chat_sessions/${assertSafeId(sessionId)}_files/${assertSafeId(fileId)}_${safeName(name)}`
 
 const userFragments = (message: UserMessage, sessionId: string): Json[] => {
   const fragments: Json[] = [{ type: 'REQUEST', content: message.content }]
@@ -484,6 +505,8 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
     if (entryCount + files.length + 2 > MAX_ENTRIES || totalBytes > MAX_TOTAL_BYTES) {
       throw new BackupError('backupTooLarge')
     }
+    // 会话 id 也进 ZIP 路径：先校验再用
+    assertSafeId(session.id)
     await addJson(`chat_sessions/${session.id}.json`, json)
     entryCount += 1
     index.push({
