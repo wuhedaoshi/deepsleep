@@ -44,6 +44,7 @@ export const ChatInput = memo(function ChatInput({ sessionId }: { sessionId: str
 
 const Input = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
+  const enterKey = useSettings((state) => state.enterKey)
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
   const { text, attachments } = draft
   const setText = (value: string) => setDraftText(sessionId, value)
@@ -206,11 +207,25 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               event.currentTarget.focus({ preventScroll: true })
             }
           }}
+          // 回车行为由设置决定：send = 回车直接发送；newline = 回车换行、Ctrl/⌘+Enter 发送。
+          // isComposing 不能去掉：中文输入法选词时按回车只是确认候选词，不该发送。
+          enterKeyHint={enterKey === 'send' ? 'send' : 'enter'}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+              return
+            }
+            const withModifier = event.ctrlKey || event.metaKey
+            if (withModifier) {
               event.preventDefault()
               send()
+              return
             }
+            if (enterKey === 'newline' || event.shiftKey) {
+              // 交给 textarea 自己插入换行
+              return
+            }
+            event.preventDefault()
+            send()
           }}
           onPaste={(event) => {
             const files = Array.from(event.clipboardData.files)
