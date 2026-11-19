@@ -67,9 +67,17 @@ public class MainActivity extends Activity {
     /** 相册多选的请求上限；实际会与系统上限取小 */
     private static final int PICK_IMAGES_MAX = 50;
 
-    /** 日志前缀用的 ISO 时间 */
+    /**
+     * 日志前缀用的 ISO 时间。
+     *
+     * 必须用 API 21 可用的实现：`Date.toInstant()` 与 `java.time` 都是 API 26+，
+     * 在 21–25 的设备上会抛 NoSuchMethodError / NoClassDefFoundError（编译期看不出来）。
+     */
     private static String javaDate() {
-        return java.util.Date.from(java.time.Instant.now()).toInstant().toString();
+        java.text.SimpleDateFormat format =
+                new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        return format.format(new java.util.Date());
     }
 
     /**
@@ -81,7 +89,7 @@ public class MainActivity extends Activity {
      * 页面上就是「选完图什么都没发生」。这里按槽位逐个取：
      * ClipData（多选）→ data（单选），并且只收 `content://`。
      */
-    private Uri[] extractUris(int resultCode, Intent data) {
+    private Uri[] extractUris(int resultCode, Intent data, boolean hadCallback) {
         boolean hasData = data != null;
         int clipCount = 0;
         Uri single = hasData ? data.getData() : null;
@@ -96,14 +104,21 @@ public class MainActivity extends Activity {
             }
             addContentUri(uris, single);
         }
-        StringBuilder extras = new StringBuilder();
-        if (hasData && data.getExtras() != null) {
-            for (String key : data.getExtras().keySet()) {
-                if (extras.length() > 0) {
-                    extras.append(',');
+        String extras = "";
+        try {
+            if (hasData && data.getExtras() != null) {
+                StringBuilder keys = new StringBuilder();
+                for (String key : data.getExtras().keySet()) {
+                    if (keys.length() > 0) {
+                        keys.append(',');
+                    }
+                    keys.append(key);
                 }
-                extras.append(key);
+                extras = keys.toString();
             }
+        } catch (RuntimeException ignored) {
+            // extras 读失败不能影响有效 URI 的交付
+            extras = "<unreadable>";
         }
         appendLogLine(javaDate() + " INFO [chooser] result"
                 + " code=" + resultCode
@@ -112,7 +127,7 @@ public class MainActivity extends Activity {
                 + " single=" + (single != null)
                 + " extras=[" + extras + "]"
                 + " delivered=" + uris.size()
-                + " callback=" + (filePathCallback != null));
+                + " callback=" + hadCallback);
         if (resultCode != RESULT_OK || uris.isEmpty()) {
             if (resultCode == RESULT_OK) {
                 // 明确告诉 JS：系统回了成功但没给文件，用户需要重选
@@ -144,12 +159,12 @@ public class MainActivity extends Activity {
 
     /** 诊断快照专用：以 [snap] 前缀落盘，便于导出后整段抓取 */
     void logSnapshot(String line) {
-        appendLogLine(new java.util.Date().toInstant().toString() + " " + line);
+        appendLogLine(javaDate() + " " + line);
     }
 
     /** 原生侧自己的日志（本地服务、生命周期等），与守卫的 [blank] 区分开 */
     void logNative(String line) {
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] " + line);
+        appendLogLine(javaDate() + " INFO [native] " + line);
     }
 
     /**
@@ -160,7 +175,7 @@ public class MainActivity extends Activity {
      */
     void logFromGuard(String line) {
         android.util.Log.i(TAG, line);
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [blank] " + line);
+        appendLogLine(javaDate() + " INFO [blank] " + line);
     }
 
     // ---- 运行日志：前端把已脱敏的行交过来，这里顺序写到外部私有目录（用户能翻到） ----
@@ -276,7 +291,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onCreate");
+        appendLogLine(javaDate() + " INFO [native] onCreate");
         startServer();
         web = new WebView(this);
         web.setBackgroundColor(Color.WHITE);
@@ -303,7 +318,7 @@ public class MainActivity extends Activity {
              */
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-        appendLogLine(new java.util.Date().toInstant().toString()
+        appendLogLine(javaDate()
                 + " ERROR [native] renderer 被杀 didCrash=" + detail.didCrash());
                 if (snapshot != null) {
                     snapshot.noteRendererGone(detail.didCrash());
@@ -343,7 +358,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageCommitVisible(WebView view, String url) {
-                appendLogLine(new java.util.Date().toInstant().toString()
+                appendLogLine(javaDate()
                         + " INFO [native] onPageCommitVisible " + url);
                 if (snapshot != null) {
                     snapshot.noteCommitVisible();
@@ -353,7 +368,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 // 与 JS 的 [boot] 打点对照：能判断白屏是「页面没加载出来」还是「加载了但脚本挂了」
-                appendLogLine(new java.util.Date().toInstant().toString()
+                appendLogLine(javaDate()
                         + " INFO [native] onPageFinished " + url);
                 if (blankGuard != null) {
                     blankGuard.probe("page-finished");
@@ -378,7 +393,7 @@ public class MainActivity extends Activity {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
-                appendLogLine(new java.util.Date().toInstant().toString()
+                appendLogLine(javaDate()
                         + " ERROR [native] onReceivedError " + error.getErrorCode()
                         + " " + error.getDescription() + " " + request.getUrl());
             }
@@ -736,7 +751,7 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);
         }
         web.loadUrl("http://127.0.0.1:" + PORT + "/index.html");
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] loadUrl " + PORT);
+        appendLogLine(javaDate() + " INFO [native] loadUrl " + PORT);
     }
 
     /**
@@ -831,10 +846,20 @@ public class MainActivity extends Activity {
             return;
         }
         if (requestCode == REQ_FILE_CHOOSER || requestCode == REQ_PICK_IMAGES) {
-            // 不用 `FileChooserParams.parseResult`：它配套的是 `createIntent()`，
-            // 而我们自己发的 OPEN_DOCUMENT / Photo Picker 结果槽位不一定被它认出来
-            // （实测 HyperOS 上 RESULT_OK 但 parseResult 返回 null → 页面收不到文件）。
-            Uri[] uris = extractUris(resultCode, data);
+            // 先把回调从字段里取出并清空：解析或日志任何一步抛错，都必须仍然回调一次，
+            // 否则 WebView 侧的 <input type=file> 会一直挂在 pending（点了永远没反应）。
+            ValueCallback<Uri[]> pending = filePathCallback;
+            filePathCallback = null;
+            Uri[] uris = null;
+            try {
+                // 不用 `FileChooserParams.parseResult`：它配套的是 `createIntent()`，
+                // 我们自己发的 OPEN_DOCUMENT / Photo Picker 的结果槽位它不一定认
+                // （实测 HyperOS 上 RESULT_OK 但返回 null → 页面收不到文件）。
+                uris = extractUris(resultCode, data, pending != null);
+            } catch (Exception parseError) {
+                appendLogLine(javaDate() + " ERROR [chooser] parse failed: " + parseError);
+                uris = null;
+            }
             if (uris != null) {
                 // 把读取权限持久化：导入几百 MB 的归档要跑好几分钟，中途 Activity 重建后
                 // content:// 的临时授权就没了，用户得重新选一次文件才能续传。
@@ -847,11 +872,10 @@ public class MainActivity extends Activity {
                         // 该 Uri 不支持持久授权，忽略。
                     }
                 }
+            } else if (resultCode == RESULT_OK) {
+                // 系统说「成功」却没给文件：明确提示重选，别让用户以为是 App 卡了
+                android.widget.Toast.makeText(this, "未收到文件，请重选", android.widget.Toast.LENGTH_SHORT).show();
             }
-            // 先从字段里取出并清空，再回调一次；取消与「选完却没有 URI」都传 null，
-            // 否则 WebView 侧的 input 会一直挂在 pending，下一次选择才会被唤醒。
-            ValueCallback<Uri[]> pending = filePathCallback;
-            filePathCallback = null;
             if (pending != null) {
                 pending.onReceiveValue(uris);
             }
@@ -867,7 +891,7 @@ public class MainActivity extends Activity {
      */
     @Override
     protected void onPause() {
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onPause"
+        appendLogLine(javaDate() + " INFO [native] onPause"
                 + " hasFocus=" + hasWindowFocus() + " webViewShown=" + (web != null && web.isShown()));
         if (snapshot != null) {
             snapshot.capture("pause");
@@ -879,14 +903,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onStop");
+        appendLogLine(javaDate() + " INFO [native] onStop");
         super.onStop();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        appendLogLine(new java.util.Date().toInstant().toString() + " INFO [native] onResume");
+        appendLogLine(javaDate() + " INFO [native] onResume");
         if (web == null) {
             return;
         }
@@ -904,7 +928,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
-        appendLogLine(new java.util.Date().toInstant().toString()
+        appendLogLine(javaDate()
                 + " INFO [native] onConfigurationChanged ori=" + newConfig.orientation
                 + " uiMode=" + newConfig.uiMode + " w=" + newConfig.screenWidthDp
                 + " h=" + newConfig.screenHeightDp + " density=" + newConfig.densityDpi);
@@ -914,7 +938,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         // 记录销毁原因：recreate 循环的现场全靠这行区分
-        appendLogLine(new java.util.Date().toInstant().toString()
+        appendLogLine(javaDate()
                 + " INFO [native] onDestroy isFinishing=" + isFinishing());
         Uri partial = null;
         synchronized (archiveLock) {
