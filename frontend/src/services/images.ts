@@ -24,6 +24,14 @@ const MAX_EDGE = 2048
  */
 const MAX_PIXELS = 40_000_000
 
+/**
+ * 字节上限（24 MB）。
+ *
+ * 读不出尺寸时（少见格式、JPEG 的 SOF 在 1 MB 之后被截断）只能按体积兜底：
+ * 超过这个量级就不解码，宁可拒绝也不要让老设备 OOM。
+ */
+const MAX_BYTES = 24 * 1024 * 1024
+
 /** JPEG 质量：0.9 在截图上肉眼无损 */
 const JPEG_QUALITY = 0.9
 
@@ -117,10 +125,23 @@ const readHeadBytes = (blob: Blob, bytes: number): Promise<Uint8Array> => {
   })
 }
 
-/** BMP：BITMAPINFOHEADER 的宽高在 18..26，按有符号小端读（高度可为负，表示自上而下） */
+/**
+ * BMP：按 DIB 头长度选布局。
+ *
+ * - 12 字节 `BITMAPCOREHEADER`（OS/2 v1）：宽高是 **16 位**，在 18 / 20
+ * - 40 字节起 `BITMAPINFOHEADER` 及以后：宽高是 32 位有符号，在 18 / 22（高度可为负）
+ *
+ * 只按 32 位读会把 16×16 的 core header 图读成天文数字，误判成超大图拒掉。
+ */
 const probeBmp = (head: Uint8Array, view: DataView): { width: number; height: number } | null => {
   if (head.length < 26 || head[0] !== 0x42 || head[1] !== 0x4d) {
     return null
+  }
+  const dibSize = view.getUint32(14, true)
+  if (dibSize === 12) {
+    const width = view.getUint16(18, true)
+    const height = view.getUint16(20, true)
+    return width > 0 && height > 0 ? { width, height } : null
   }
   const width = Math.abs(view.getInt32(18, true))
   const height = Math.abs(view.getInt32(22, true))
@@ -131,7 +152,7 @@ const probeBmp = (head: Uint8Array, view: DataView): { width: number; height: nu
  * 从文件头读尺寸，**不解码**。
  *
  * 只为在解码前拦住超大图：解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB。
- * 认得 PNG / JPEG / GIF / WebP / BMP；认不出（或读头失败）返回 null，
+ * 认得 PNG / JPEG / GIF / WebP / BMP；认不出、读头失败、或头被截断都返回 null，
  * 由调用方按「未知尺寸」保守处理。
  */
 const probeImageSize = async (blob: Blob): Promise<{ width: number; height: number } | null> => {
@@ -145,6 +166,15 @@ const probeImageSize = async (blob: Blob): Promise<{ width: number; height: numb
   if (head.length < 26) {
     return null
   }
+  try {
+    return probeHead(head)
+  } catch {
+    // 头被截断时 DataView 会抛 RangeError：当作「尺寸未知」而不是失败
+    return null
+  }
+}
+
+const probeHead = (head: Uint8Array): { width: number; height: number } | null => {
   const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
   // PNG：IHDR 宽高在 16..24
   if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
@@ -154,20 +184,20 @@ const probeImageSize = async (blob: Blob): Promise<{ width: number; height: numb
   if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
     return { width: head[6] | (head[7] << 8), height: head[8] | (head[9] << 8) }
   }
-  // WebP：RIFF....WEBP 后是 VP8X / VP8 / VP8L 三种头
+  // WebP：RIFF....WEBP 后是 VP8X / VP8 / VP8L 三种头；每种先把最短长度核掉再读
   if (head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) {
     const chunk = String.fromCharCode(head[12], head[13], head[14], head[15])
-    if (chunk === 'VP8X') {
+    if (chunk === 'VP8X' && head.length >= 30) {
       return {
         width: 1 + (head[24] | (head[25] << 8) | (head[26] << 16)),
         height: 1 + (head[27] | (head[28] << 8) | (head[29] << 16)),
       }
     }
-    if (chunk === 'VP8 ') {
+    if (chunk === 'VP8 ' && head.length >= 30) {
       // VP8 的宽高是 14 位**小端**（RFC 6386）；按大端读会把 8192 读成 32，绕过上限
       return { width: view.getUint16(26, true) & 0x3fff, height: view.getUint16(28, true) & 0x3fff }
     }
-    if (chunk === 'VP8L') {
+    if (chunk === 'VP8L' && head.length >= 25) {
       const bits = head[21] | (head[22] << 8) | (head[23] << 16) | (head[24] << 24)
       return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
     }
@@ -259,9 +289,10 @@ const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
  * 三种情况：
  * - 已经是 jpeg/png 且头信息显示尺寸达标：**不重新编码、不解码**，直接返回
  * - 别的格式，或尺寸过大：解码一次、压到 2048 以内、转成 JPEG
- * - 头信息读不出尺寸（少见格式）：保守转换，保证服务端能收
+ * - 头信息读不出尺寸（少见格式 / JPEG 的 SOF 太靠后）：按字节上限把关后再解码
  *
- * 解码前先用 `probeImageSize` 拦超大图（见 `MAX_PIXELS`）。
+ * 两道闸都在**解码之前**：`MAX_PIXELS`（像素，按文件头算）与 `MAX_BYTES`（字节，兜住
+ * 读不出尺寸的情况）。解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB，老设备直接 OOM。
  */
 export const toSupportedImage = async (blob: Blob, name: string): Promise<NormalizedImage> => {
   const probed = await probeImageSize(blob)
@@ -269,10 +300,13 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
     throw new ImageConvertError('图片尺寸过大')
   }
   const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
-  const fits =
-    probed !== null && Math.max(probed.width, probed.height) <= MAX_EDGE
+  const fits = probed !== null && Math.max(probed.width, probed.height) <= MAX_EDGE
   if (supported && fits) {
     return { blob, name, converted: false }
+  }
+  // 尺寸读不出来时只能按字节量兜底：大到无法确认就不解码
+  if (probed === null && blob.size > MAX_BYTES) {
+    throw new ImageConvertError('图片尺寸过大')
   }
   const jpeg = await drawToJpeg(blob)
   if (jpeg === null) {
