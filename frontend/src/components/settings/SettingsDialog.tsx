@@ -149,6 +149,8 @@ const SettingsContent = () => {
             </>
           )}
         </div>
+        {/* 版本行：安装后能直接确认是不是新包——之前没有这行，只能去系统设置里翻，很容易看成「版本没变」 */}
+        <div className={styles.version}>{appVersionLine()}</div>
       </Modal>
       {historyImport.file ? <ImportConfirm historyImport={historyImport} /> : null}
       {logOpen ? <LogPanel onClose={() => setLogOpen(false)} /> : null}
@@ -397,6 +399,34 @@ const ImportConfirm = ({
       <div className={styles.importConfirmHint}>{t('historyImportAttachmentsHint')}</div>
     </Modal>
   )
+}
+
+/**
+ * 设置面板底部的版本行。
+ *
+ * 读原生 `getEnvironment()`（与启动日志同源），所以设备上看到的版本号
+ * 就是 APK 的真实版本，不依赖任何硬编码常量。
+ */
+const appVersionLine = (): string => {
+  const bridge = (window as { __deepsleepNative?: { getEnvironment?: () => string } })
+    .__deepsleepNative
+  if (typeof bridge?.getEnvironment !== 'function') {
+    return 'Deepsleep'
+  }
+  try {
+    const info = JSON.parse(bridge.getEnvironment()) as {
+      versionName?: string
+      versionCode?: number
+    }
+    if (!info.versionName) {
+      return 'Deepsleep'
+    }
+    return info.versionCode === undefined
+      ? `Deepsleep ${info.versionName}`
+      : `Deepsleep ${info.versionName} (${info.versionCode})`
+  } catch {
+    return 'Deepsleep'
+  }
 }
 
 const themeOptions: { value: ThemePreference; label: TranslationKey; icon: ReactNode }[] = [

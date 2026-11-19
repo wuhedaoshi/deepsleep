@@ -500,3 +500,11 @@
     max-height: calc(100dvh - 32px);
   }
 }
+/* 版本行：低调但可见，装在设备上能立刻确认包对不对 */
+.version {
+  padding: 8px 16px 12px;
+  color: var(--text-tertiary, #9ca3af);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
