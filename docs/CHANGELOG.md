@@ -1,5 +1,25 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.15（暂停语义 + 图片通路加固）
+
+**暂停与续写**
+
+- `pause_turn` / `stop_sequence` 收进 `stop_reason` 白名单（原来整条 `message_delta` 会被丢弃）
+- `pause_turn` 结算为「未完成」而不是「已完成」；缺 `message_stop` 的兜底同样处理
+- **联网过的回复不给续写按钮**：官方明确「用过 `deepseek_web_search` / `deepseek_url` 的回复不能续写，会 400」，
+  改为提示重新发送；报错状态仍不可续
+
+**图片**
+
+- 老 WebView 没有 `createImageBitmap` 时退回 `<img>` + canvas（原来直接原样上传，服务端回 `unsupported image`）
+- 解码前按**文件头**核尺寸（PNG / JPEG / GIF / WebP / BMP），超 40 MP 或读不出尺寸一律拒绝——一张 1 MB 的
+  8192×8192 图解码后是 268 MP，老设备会被系统直接杀掉
+- 解码只做一次：上传与草稿缩略图共用同一份归一化结果（按 Blob 缓存），并加解码并发闸（最多 2 张）
+- 缩略图不再直接拿原文件做 URL（那会让 `<img>` 按原尺寸解码整张图）
+- 资源释放放进 `finally`；JPEG 按段跳读，`FF` 填充可跨读取窗口
+- AVIF / HEIC 暂时本地明确拒绝（提示格式无法识别），后续按 WebCodecs 单独接入
+
+**注**：稳定线没有上下文压缩，用量圆环仍只显示、不可点击。
 ## 1.2.14（图片格式兜底 + 暂停语义）
 
 - **老 WebView 图片格式不支持**：`images.ts` 新增 `loadDrawable()`——先 `createImageBitmap`，缺失或解码失败退回
