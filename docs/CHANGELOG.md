@@ -1,5 +1,29 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.16（选图不再静默失败；图片按真实字节判型）
+
+**根因**：小红书等 App 存下来的图**文件名是 `.jpg`、MIME 报 `image/jpeg`，字节其实是 WebP**。
+原来按「声明类型」判断放行，于是 WebP 被当 JPEG 原样上传，服务端按内容拒绝 → 上传失败 →
+发送键一直灰、连缩略图都没有。另一位设备的同类图片也就复现成「选完图什么都没发生」。
+
+**修法**
+
+- 新增 `detectImageFormat()`：只看魔数（PNG/JPEG/GIF/WebP/BMP），放行条件与改名都按**真实格式**，不再信 `blob.type`
+- 名字/MIME 与字节不符时纠正（JPEG 字节叫 `.png` → 改成 `.jpg` 并重设 MIME）
+- MIME 兜底表覆盖全部图片扩展名（补 `apng`/`jfif`/`bmp`）；`application/octet-stream` 一类通用类型按扩展名判型，
+  不再把图片当文档绕过归一化
+- 需要转换却拿不到 2D canvas → 报 `convertFailed`，不再原样上传
+
+**不再静默**
+
+- `partitionFiles()` 逐文件判定：一张不合格不再拖累整批；失败分四类具体文案（格式 / 尺寸 / 数量 / 解码）
+- 相册入口的 chooser 支持「扩展名 → MIME」映射（此前把 `accept` 改成扩展名列表后原生退化成 `*/*`）
+- 上传请求与读响应体加 120s 超时；2xx 但 `file_id` 为空当失败；取消后不再发出 POST
+
+**可诊断**
+
+- 启动时记录环境：Android/WebView 版本、`createImageBitmap` / `Blob.arrayBuffer` / `FileReader` / `canvas.toBlob` 可用性
+- 每次选图生成诊断 ID，串起「原生 chooser → 收到选择 → 草稿写入 → 图片预处理 → 上传完成/失败」
 ## 1.2.15（暂停语义 + 图片通路加固）
 
 **暂停与续写**
