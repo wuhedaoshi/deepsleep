@@ -2,41 +2,13 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  /* 触控区：Android 推荐 48×48dp，这里靠内边距 + 最小高度撑到可点范围 */
-  min-height: 28px;
-  padding: 4px 8px;
-  margin: -4px 0;
-  border: 0;
+  padding: 1px 6px;
   border-radius: 999px;
-  background: transparent;
   color: var(--text-tertiary, #9ca3af);
   font-size: 12px;
-  font-family: inherit;
   font-variant-numeric: tabular-nums;
   line-height: 18px;
-  /* 点圆环 = 立刻压缩一次历史（原来 cursor 是 default，看不出可以点） */
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-  /* 遥测 chip 不该被长按选中或弹出系统菜单，否则点一下会变成选字 */
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  touch-action: manipulation;
-}
-
-.meter:hover:not(:disabled) {
-  background: var(--surface-tertiary, rgba(127, 127, 127, 0.12));
-  color: var(--text-secondary, #6b7280);
-}
-
-.meter:disabled {
-  cursor: progress;
-  opacity: 0.6;
-}
-
-.meter:focus-visible {
-  outline: 2px solid var(--accent-primary, #4d6bfe);
-  outline-offset: 2px;
+  cursor: default;
 }
 
 .ring {
