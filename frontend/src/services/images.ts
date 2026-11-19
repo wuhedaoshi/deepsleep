@@ -396,6 +396,47 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
  * 也不要让整个会话发不出去。
  */
 export const isRiskyImageType = (mime: string): boolean => !SUPPORTED_IMAGE_TYPES.has(mime)
+/**
+ * 解码闸：同一时刻最多 2 张图在解码。
+ *
+ * 上传队列（`attachments.ts` 的 `MAX_CONCURRENT = 3`）只管网络请求，管不到解码；
+ * 缩略图又不走那个队列。一次选 8 张大图时，两条路会各解一遍，直接把 WebView 撑爆。
+ */
+const MAX_DECODES = 2
+let decoding = 0
+const decodeWaiters: (() => void)[] = []
+
+const withDecodeSlot = async <T>(run: () => Promise<T>): Promise<T> => {
+  if (decoding >= MAX_DECODES) {
+    await new Promise<void>((resolve) => decodeWaiters.push(resolve))
+  }
+  decoding += 1
+  try {
+    return await run()
+  } finally {
+    decoding -= 1
+    decodeWaiters.shift()?.()
+  }
+}
+
+/**
+ * 归一化的**单次**解码结果按源对象缓存。
+ *
+ * 上传与缩略图针对同一个 `File`：复用同一次 `toSupportedImage`，不再各解一遍；
+ * 失败时把缓存清掉，下次重试还能重新走一遍。
+ */
+const normalized = new WeakMap<Blob, Promise<NormalizedImage>>()
+
+export const normalizeImage = (blob: Blob, name: string): Promise<NormalizedImage> => {
+  const cached = normalized.get(blob)
+  if (cached !== undefined) {
+    return cached
+  }
+  const task = withDecodeSlot(() => toSupportedImage(blob, name))
+  normalized.set(blob, task)
+  void task.catch(() => normalized.delete(blob))
+  return task
+}
 /** 草稿缩略图的目标长边：够看清就行，别为了 64px 的格子解码整张大图 */
 const PREVIEW_EDGE = 256
 
@@ -408,19 +449,23 @@ const PREVIEW_EDGE = 256
  *
  * 调用方负责在删除附件时 `URL.revokeObjectURL`。
  */
-export const createPreviewUrl = async (blob: Blob): Promise<string | null> => {
+export const createPreviewUrl = async (blob: Blob, name = 'preview'): Promise<string | null> => {
   const probed = await probeImageSize(blob)
+  // 读不出尺寸或超出像素上限：不给预览，上传那条路会给出明确原因
   if (probed === null || probed.width * probed.height > MAX_PIXELS) {
     return null
   }
-  if (Math.max(probed.width, probed.height) <= PREVIEW_EDGE) {
-    return URL.createObjectURL(blob)
-  }
   try {
-    const thumbnail = await drawToJpeg(blob, PREVIEW_EDGE)
-    // 没有 canvas（Node / 极老 WebView）时退回原图 URL：尺寸已经过闸，浏览器解它不会失控
-    return URL.createObjectURL(thumbnail ?? blob)
+    // 走同一条归一化流程：与上传共用一次解码，结果已经压到 2048 以内
+    const base = await normalizeImage(blob, name)
+    const edge = Math.max(probed.width, probed.height)
+    if (edge <= PREVIEW_EDGE) {
+      return URL.createObjectURL(base.blob)
+    }
+    const thumbnail = await withDecodeSlot(() => drawToJpeg(base.blob, PREVIEW_EDGE))
+    return URL.createObjectURL(thumbnail ?? base.blob)
   } catch {
-    return URL.createObjectURL(blob)
+    // 归一化本身就失败（解不开）：让上传报同一个错误，这里不给预览
+    return null
   }
 }
