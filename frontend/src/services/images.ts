@@ -149,6 +149,60 @@ const probeBmp = (head: Uint8Array, view: DataView): { width: number; height: nu
 }
 
 /**
+ * JPEG：按段长度**跳读**找 SOF，不受 1 MB 头窗口限制。
+ *
+ * 为什么必须这么做：`APPn` / ICC / EXIF 段可以有几 MB，一张 1.9 MB 的 8192×8192 JPEG
+ * 其 SOF 完全可能在 1 MiB 之后。只读头部会得出「尺寸未知」，而字节闸（24 MB）又拦不住它，
+ * 结果就是把 268 MP 的位图交给解码器。这里逐段 `slice` 只读 16 字节，成本是常数级。
+ *
+ * 找不到 SOF（超过 `limit` 段）返回 null，由调用方拒绝全尺寸解码。
+ */
+const probeJpegSize = async (
+  blob: Blob,
+  limit = 512
+): Promise<{ width: number; height: number } | null> => {
+  let at = 2
+  for (let step = 0; step < limit && at + 4 <= blob.size; step += 1) {
+    const window = await readHeadBytes(blob.slice(at, Math.min(at + 16, blob.size)), 16)
+    if (window.length < 2) {
+      return null
+    }
+    if (window[0] !== 0xff) {
+      return null
+    }
+    let cursor = 0
+    while (cursor + 1 < window.length && window[cursor + 1] === 0xff) {
+      cursor += 1
+    }
+    const marker = window[cursor + 1]
+    // 无长度的独立标记
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      at += cursor + 2
+      continue
+    }
+    if (cursor + 3 >= window.length) {
+      return null
+    }
+    const size = (window[cursor + 2] << 8) | window[cursor + 3]
+    if (size < 2) {
+      return null
+    }
+    const isSof =
+      marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isSof) {
+      // SOF 里高度在段内 3..5、宽度在 5..7（相对段起点，含长度字段）
+      const body = await readHeadBytes(blob.slice(at + cursor, Math.min(at + cursor + 16, blob.size)), 16)
+      if (body.length < 9) {
+        return null
+      }
+      return { height: (body[5] << 8) | body[6], width: (body[7] << 8) | body[8] }
+    }
+    at += cursor + 2 + size
+  }
+  return null
+}
+
+/**
  * 从文件头读尺寸，**不解码**。
  *
  * 只为在解码前拦住超大图：解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB。
@@ -295,7 +349,13 @@ const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
  * 读不出尺寸的情况）。解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB，老设备直接 OOM。
  */
 export const toSupportedImage = async (blob: Blob, name: string): Promise<NormalizedImage> => {
-  const probed = await probeImageSize(blob)
+  let probed = await probeImageSize(blob)
+  const head = await readHeadBytes(blob.slice(0, 2), 2).catch(() => new Uint8Array())
+  const isJpeg = head.length >= 2 && head[0] === 0xff && head[1] === 0xd8
+  // JPEG 的头窗口可能读不到 SOF（EXIF/ICC 段很大）：按段跳读再确认一次
+  if (probed === null && isJpeg) {
+    probed = await probeJpegSize(blob)
+  }
   if (probed !== null && probed.width * probed.height > MAX_PIXELS) {
     throw new ImageConvertError('图片尺寸过大')
   }
@@ -304,7 +364,12 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
   if (supported && fits) {
     return { blob, name, converted: false }
   }
-  // 尺寸读不出来时只能按字节量兜底：大到无法确认就不解码
+  // JPEG 仍读不出尺寸：段结构已经不可信（超过 512 段或长度字段异常），
+  // 与其把未知大小的位图交给解码器，不如拒绝。
+  if (probed === null && isJpeg) {
+    throw new ImageConvertError('图片尺寸过大')
+  }
+  // 其它格式读不出尺寸时按体积兜底
   if (probed === null && blob.size > MAX_BYTES) {
     throw new ImageConvertError('图片尺寸过大')
   }
