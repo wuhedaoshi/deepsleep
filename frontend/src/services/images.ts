@@ -95,60 +95,125 @@ const loadDrawable = async (blob: Blob): Promise<Drawable> => {
 }
 
 /**
+ * 读文件头字节。
+ *
+ * `Blob.arrayBuffer()` 要 Chrome 76+；老 WebView 上没有，直接调用会让**所有**图片在
+ * 进入 `<img>` 兜底之前就失败，所以这里用 FileReader 兜一层。
+ */
+const readHeadBytes = (blob: Blob, bytes: number): Promise<Uint8Array> => {
+  const part = blob.slice(0, bytes)
+  if (typeof part.arrayBuffer === 'function') {
+    return part.arrayBuffer().then((buffer) => new Uint8Array(buffer))
+  }
+  return new Promise((resolve, reject) => {
+    if (typeof FileReader !== 'function') {
+      reject(new ImageConvertError('图片无法解码'))
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer))
+    reader.onerror = () => reject(new ImageConvertError('图片无法解码'))
+    reader.readAsArrayBuffer(part)
+  })
+}
+
+/** BMP：BITMAPINFOHEADER 的宽高在 18..26，按有符号小端读（高度可为负，表示自上而下） */
+const probeBmp = (head: Uint8Array, view: DataView): { width: number; height: number } | null => {
+  if (head.length < 26 || head[0] !== 0x42 || head[1] !== 0x4d) {
+    return null
+  }
+  const width = Math.abs(view.getInt32(18, true))
+  const height = Math.abs(view.getInt32(22, true))
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
  * 从文件头读尺寸，**不解码**。
  *
  * 只为在解码前拦住超大图：解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB。
- * 认得 PNG / JPEG / GIF / WebP 四种；认不出返回 null，由调用方按「未知尺寸」保守处理。
+ * 认得 PNG / JPEG / GIF / WebP / BMP；认不出（或读头失败）返回 null，
+ * 由调用方按「未知尺寸」保守处理。
  */
 const probeImageSize = async (blob: Blob): Promise<{ width: number; height: number } | null> => {
-  // 头 32 字节够 PNG/JPEG/GIF/WebP 判断；JPEG 的尺寸在 SOF 段里，往后多读一些
-  const head = new Uint8Array(await blob.slice(0, 256 * 1024).arrayBuffer())
-  const view = new DataView(head.buffer)
-  const u16 = (at: number) => view.getUint16(at)
-  const u32 = (at: number) => view.getUint32(at)
+  let head: Uint8Array
+  try {
+    // JPEG 的 SOF 段可能在 APPn/EXIF 之后很远，给 1 MB
+    head = await readHeadBytes(blob, 1024 * 1024)
+  } catch {
+    return null
+  }
+  if (head.length < 26) {
+    return null
+  }
+  const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
   // PNG：IHDR 宽高在 16..24
-  if (head.length > 24 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
-    return { width: u32(16), height: u32(20) }
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    return { width: view.getUint32(16), height: view.getUint32(20) }
   }
   // GIF：逻辑屏幕宽高在 6..10（小端）
-  if (head.length > 10 && head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
+  if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
     return { width: head[6] | (head[7] << 8), height: head[8] | (head[9] << 8) }
   }
-  // WebP：VP8 / VP8L / VP8X 三种头
-  if (head.length > 30 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) {
+  // WebP：RIFF....WEBP 后是 VP8X / VP8 / VP8L 三种头
+  if (head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) {
     const chunk = String.fromCharCode(head[12], head[13], head[14], head[15])
     if (chunk === 'VP8X') {
-      const width = 1 + (head[24] | (head[25] << 8) | (head[26] << 16))
-      const height = 1 + (head[27] | (head[28] << 8) | (head[29] << 16))
-      return { width, height }
+      return {
+        width: 1 + (head[24] | (head[25] << 8) | (head[26] << 16)),
+        height: 1 + (head[27] | (head[28] << 8) | (head[29] << 16)),
+      }
     }
     if (chunk === 'VP8 ') {
-      return { width: u16(26) & 0x3fff, height: u16(28) & 0x3fff }
+      // VP8 的宽高是 14 位**小端**（RFC 6386）；按大端读会把 8192 读成 32，绕过上限
+      return { width: view.getUint16(26, true) & 0x3fff, height: view.getUint16(28, true) & 0x3fff }
     }
     if (chunk === 'VP8L') {
       const bits = head[21] | (head[22] << 8) | (head[23] << 16) | (head[24] << 24)
       return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
     }
   }
+  const bmp = probeBmp(head, view)
+  if (bmp !== null) {
+    return bmp
+  }
   // JPEG：扫段找 SOF0..SOF3 / SOF5..SOF7 / SOF9..SOF11 / SOF13..SOF15
-  if (head.length > 4 && head[0] === 0xff && head[1] === 0xd8) {
+  if (head[0] === 0xff && head[1] === 0xd8) {
     let at = 2
     while (at + 9 < head.length) {
       if (head[at] !== 0xff) {
+        // 段之间理论上不允许出现非 0xFF，真出现就往下找下一个标记
         at += 1
         continue
       }
-      const marker = head[at + 1]
-      const size = (head[at + 2] << 8) | head[at + 3]
-      const isSof =
-        marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-      if (isSof) {
-        return { height: (head[at + 5] << 8) | head[at + 6], width: (head[at + 7] << 8) | head[at + 8] }
+      // 跳过 0xFF 填充字节
+      let markerAt = at
+      while (markerAt + 1 < head.length && head[markerAt + 1] === 0xff) {
+        markerAt += 1
       }
-      if (size <= 0) {
+      const marker = head[markerAt + 1]
+      // 无长度的独立标记：RSTn / SOI / EOI
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        at = markerAt + 2
+        continue
+      }
+      const size = (head[markerAt + 2] << 8) | head[markerAt + 3]
+      const isSof =
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      if (isSof && size >= 7) {
+        return {
+          height: (head[markerAt + 5] << 8) | head[markerAt + 6],
+          width: (head[markerAt + 7] << 8) | head[markerAt + 8],
+        }
+      }
+      // 长度字段至少 2 字节；异常值直接放弃探测（交给解码阶段的像素闸）
+      if (size < 2) {
         break
       }
-      at += 2 + size
+      at = markerAt + 2 + size
     }
   }
   return null
