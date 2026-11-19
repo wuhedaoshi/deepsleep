@@ -169,12 +169,30 @@ export const getReplyText = (reply: AssistantMessage) =>
  * 本轮含服务端工具调用或结果（含 READ_LINK 和孤立结果块）的回复不能续写。
  * 服务端模板提示不能作为续写前缀。
  */
+/**
+ * 这一轮是否用过服务端联网工具。
+ *
+ * 用过之后**不能续写**（服务端 400），只能重发原请求——这是官方的硬限制，
+ * 不是我们的取舍：见 api-docs.deepseek.com/guides/web_tools#continue-generation。
+ */
+export const hasServerTools = (reply: AssistantMessage): boolean =>
+  reply.blocks.some(
+    (block) =>
+      block.type === 'server_tool_use' ||
+      block.type === 'web_search_tool_result' ||
+      block.type === 'web_fetch_tool_result'
+  )
+
 export const canContinueReply = (reply: AssistantMessage): boolean => {
-  // `pause_turn` 是服务端主动暂停（往往正卡在工具调用中途），语义上就该续请求；
-  // 下面「有工具块就不能续写」的规则针对的是正常结束的轮次，对暂停不适用。
-  // 但状态检查不能跳过：报错/进行中的回答仍然不能续写。
+  // `pause_turn` 是服务端主动暂停。官方明确：**用过 deepseek_web_search / deepseek_read_url 的回复
+  // 不能续写，续写请求会返回 400**（api-docs.deepseek.com/guides/web_tools#continue-generation），
+  // 只能重发原请求。所以只有没走联网工具的暂停才允许续写。
   if (reply.stopReason === 'pause_turn') {
-    return reply.prefix && (reply.status === 'done' || reply.status === 'stopped')
+    return (
+      reply.prefix &&
+      (reply.status === 'done' || reply.status === 'stopped') &&
+      !hasServerTools(reply)
+    )
   }
   if (
     !reply.prefix ||
@@ -229,10 +247,7 @@ const toUserParam = ({ content, files }: UserMessage): MessageParam => {
 const toAssistantParam = (
   { blocks }: AssistantMessage,
   prefix = false,
-  thinking = false,
-  // 续写一个 `pause_turn` 回答时必须把工具调用与结果原样带上：
-  // 服务端暂停往往发生在工具轮次中途，去掉工具块等于让它重头再来。
-  keepTools = false
+  thinking = false
 ): Extract<MessageParam, { role: 'assistant' }> => {
   const content: AssistantBlockParam[] = []
   // 成功阅读的网页靠签名恢复正文；缺少有效签名时，调用与结果都不回传。
@@ -271,14 +286,6 @@ const toAssistantParam = (
       // 续写保留本轮思考，历史轮次的思考省略。
       const { type, thinking, signature } = block
       content.push({ type, thinking, signature: signature ?? '' })
-    } else if (
-      keepTools &&
-      (block.type === 'server_tool_use' ||
-        block.type === 'web_search_tool_result' ||
-        block.type === 'web_fetch_tool_result')
-    ) {
-      // 暂停续写：工具调用与结果原样回传，服务端据此接着跑
-      content.push(block)
     } else if (
       block.type === 'server_tool_use' &&
       block.kind === 'read_link' &&
@@ -344,18 +351,14 @@ export const toRequestMessages = (
   appendReminder(latestReminder)
   messages.push(toUserParam(question))
   if (prefix?.prefix) {
-    const paused = prefix.stopReason === 'pause_turn'
-    const assistant = toAssistantParam(prefix, true, thinking, paused)
-    // 暂停续写时即使只有工具块也要回传（服务端靠它接着跑）；
-    // 其它情况仍要求有非空白正文或有效思考，避免服务端拒绝空 Prefill。
+    const assistant = toAssistantParam(prefix, true, thinking)
+    // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。
     if (
-      paused
-        ? assistant.content.length > 0
-        : assistant.content.some(
-            (block) =>
-              (block.type === 'text' && block.text.trim()) ||
-              (block.type === 'thinking' && block.thinking.trim())
-          )
+      assistant.content.some(
+        (block) =>
+          (block.type === 'text' && block.text.trim()) ||
+          (block.type === 'thinking' && block.thinking.trim())
+      )
     ) {
       messages.push(assistant)
     }

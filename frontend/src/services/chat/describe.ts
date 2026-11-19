@@ -1,5 +1,6 @@
 import { isTranslationKey, translate } from '../../i18n/index.js'
 import { classifyStatus } from '../api/errors.js'
+import { hasServerTools } from './reply.js'
 import type { AssistantMessage } from './types.js'
 
 export type Notice = {
@@ -52,6 +53,10 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
   if (reply.stopReason === 'refusal') {
     // 导入的拒绝回复优先展示归档中的模板，普通正文仍不可展示。
     return { text: template || translate('replyRefused'), presentation: 'response' }
+  }
+  // 联网暂停：官方不允许续写（会 400），只能重发；给一条明确提示，别让用户盯着半截回答。
+  if (reply.stopReason === 'pause_turn' && hasServerTools(reply)) {
+    return { text: translate('replyPausedByTools') }
   }
   if (template) {
     return { text: template, presentation: 'response' }

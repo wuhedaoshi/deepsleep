@@ -117,6 +117,7 @@ export const zh = {
   completionServerBusyToast: '服务器繁忙，请稍后再试',
   unknownError: '未知错误',
   replyRefused: '你好，这个问题我暂时无法回答，让我们换个话题再聊聊吧。',
+  replyPausedByTools: '这条回答在联网检索后暂停了。联网过的回复不能续写，重新发送同一个问题即可（会重新检索一遍）。',
   messageThinkDuration: '已思考（用时 {count} 秒）',
   messageThinkDurationPlural: '已思考（用时 {count} 秒）',
   messageThinkStopped: '已停止',

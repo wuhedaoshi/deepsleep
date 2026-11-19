@@ -16,6 +16,14 @@ const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png'])
 /** 长边上限：再大对识别没帮助，只会更慢更贵 */
 const MAX_EDGE = 2048
 
+/**
+ * 总像素上限（约 40 MP）。
+ *
+ * 必须有这条闸：解码后的位图按 RGBA 常驻内存，20000×20000 就是约 1.49 GiB，
+ * 老设备上直接 OOM。所以要在**解码之前**从文件头读出尺寸来拦。
+ */
+const MAX_PIXELS = 40_000_000
+
 /** JPEG 质量：0.9 在截图上肉眼无损 */
 const JPEG_QUALITY = 0.9
 
@@ -86,59 +94,119 @@ const loadDrawable = async (blob: Blob): Promise<Drawable> => {
   return loadViaImageElement(blob)
 }
 
+/**
+ * 从文件头读尺寸，**不解码**。
+ *
+ * 只为在解码前拦住超大图：解码后的位图按 RGBA 常驻，20000×20000 约 1.49 GiB。
+ * 认得 PNG / JPEG / GIF / WebP 四种；认不出返回 null，由调用方按「未知尺寸」保守处理。
+ */
+const probeImageSize = async (blob: Blob): Promise<{ width: number; height: number } | null> => {
+  // 头 32 字节够 PNG/JPEG/GIF/WebP 判断；JPEG 的尺寸在 SOF 段里，往后多读一些
+  const head = new Uint8Array(await blob.slice(0, 256 * 1024).arrayBuffer())
+  const view = new DataView(head.buffer)
+  const u16 = (at: number) => view.getUint16(at)
+  const u32 = (at: number) => view.getUint32(at)
+  // PNG：IHDR 宽高在 16..24
+  if (head.length > 24 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    return { width: u32(16), height: u32(20) }
+  }
+  // GIF：逻辑屏幕宽高在 6..10（小端）
+  if (head.length > 10 && head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
+    return { width: head[6] | (head[7] << 8), height: head[8] | (head[9] << 8) }
+  }
+  // WebP：VP8 / VP8L / VP8X 三种头
+  if (head.length > 30 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) {
+    const chunk = String.fromCharCode(head[12], head[13], head[14], head[15])
+    if (chunk === 'VP8X') {
+      const width = 1 + (head[24] | (head[25] << 8) | (head[26] << 16))
+      const height = 1 + (head[27] | (head[28] << 8) | (head[29] << 16))
+      return { width, height }
+    }
+    if (chunk === 'VP8 ') {
+      return { width: u16(26) & 0x3fff, height: u16(28) & 0x3fff }
+    }
+    if (chunk === 'VP8L') {
+      const bits = head[21] | (head[22] << 8) | (head[23] << 16) | (head[24] << 24)
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
+    }
+  }
+  // JPEG：扫段找 SOF0..SOF3 / SOF5..SOF7 / SOF9..SOF11 / SOF13..SOF15
+  if (head.length > 4 && head[0] === 0xff && head[1] === 0xd8) {
+    let at = 2
+    while (at + 9 < head.length) {
+      if (head[at] !== 0xff) {
+        at += 1
+        continue
+      }
+      const marker = head[at + 1]
+      const size = (head[at + 2] << 8) | head[at + 3]
+      const isSof =
+        marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+      if (isSof) {
+        return { height: (head[at + 5] << 8) | head[at + 6], width: (head[at + 7] << 8) | head[at + 8] }
+      }
+      if (size <= 0) {
+        break
+      }
+      at += 2 + size
+    }
+  }
+  return null
+}
+
 /** 用 canvas 把任意可解码的图片画成 JPEG；没有 canvas 的环境返回 null */
 const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
   if (typeof document === 'undefined') {
     return null
   }
   const drawable = await loadDrawable(blob)
-  const scale = Math.min(1, MAX_EDGE / Math.max(drawable.width, drawable.height))
-  const width = Math.max(1, Math.round(drawable.width * scale))
-  const height = Math.max(1, Math.round(drawable.height * scale))
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const context = canvas.getContext('2d')
-  if (!context) {
+  try {
+    const scale = Math.min(1, MAX_EDGE / Math.max(drawable.width, drawable.height))
+    const width = Math.max(1, Math.round(drawable.width * scale))
+    const height = Math.max(1, Math.round(drawable.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) {
+      return null
+    }
+    // JPEG 没有透明通道，先铺白底，否则透明区会变成黑色
+    context.fillStyle = '#fff'
+    context.fillRect(0, 0, width, height)
+    context.drawImage(drawable.source, 0, 0, width, height)
+    const output = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((result) => resolve(result), 'image/jpeg', JPEG_QUALITY)
+    })
+    if (output === null) {
+      throw new ImageConvertError('图片转换失败')
+    }
+    return output
+  } finally {
+    // 无论画布、drawImage 还是 toBlob 抛错都要释放位图 / object URL
     drawable.close()
-    return null
   }
-  // JPEG 没有透明通道，先铺白底，否则透明区会变成黑色
-  context.fillStyle = '#fff'
-  context.fillRect(0, 0, width, height)
-  context.drawImage(drawable.source, 0, 0, width, height)
-  drawable.close()
-  const output = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((result) => resolve(result), 'image/jpeg', JPEG_QUALITY)
-  })
-  if (output === null) {
-    throw new ImageConvertError('图片转换失败')
-  }
-  return output
 }
 
 /**
  * 把图片变成服务端能吃的格式。
  *
- * 已经是 jpeg/png 且尺寸不超限时原样返回（不重新编码，避免无谓掉质量）。
- * 尺寸判断走 `loadDrawable`：老 WebView 没有 `createImageBitmap` 时也能量出长边，
- * 否则超大 PNG 会带着原尺寸上传，服务端同样会拒。
+ * 三种情况：
+ * - 已经是 jpeg/png 且头信息显示尺寸达标：**不重新编码、不解码**，直接返回
+ * - 别的格式，或尺寸过大：解码一次、压到 2048 以内、转成 JPEG
+ * - 头信息读不出尺寸（少见格式）：保守转换，保证服务端能收
+ *
+ * 解码前先用 `probeImageSize` 拦超大图（见 `MAX_PIXELS`）。
  */
 export const toSupportedImage = async (blob: Blob, name: string): Promise<NormalizedImage> => {
-  const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
-  let oversized = false
-  let decodable = true
-  if (supported) {
-    try {
-      const drawable = await loadDrawable(blob)
-      oversized = Math.max(drawable.width, drawable.height) > MAX_EDGE
-      drawable.close()
-    } catch {
-      // 解不开就交给下面的转换分支；再失败会让调用方给出明确提示
-      decodable = false
-    }
+  const probed = await probeImageSize(blob)
+  if (probed !== null && probed.width * probed.height > MAX_PIXELS) {
+    throw new ImageConvertError('图片尺寸过大')
   }
-  if (supported && decodable && !oversized) {
+  const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
+  const fits =
+    probed !== null && Math.max(probed.width, probed.height) <= MAX_EDGE
+  if (supported && fits) {
     return { blob, name, converted: false }
   }
   const jpeg = await drawToJpeg(blob)

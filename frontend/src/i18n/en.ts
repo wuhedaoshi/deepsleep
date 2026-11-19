@@ -122,6 +122,7 @@ export const en = {
   completionServerBusyToast: 'Server busy, please try again later.',
   unknownError: 'Unknown error',
   replyRefused: "Sorry, that's beyond my current scope. Let's talk about something else.",
+  replyPausedByTools: 'This reply paused after a web search. Replies that used web tools cannot be continued - resend the same question to search again.',
   messageThinkDuration: 'Thought for {count} second',
   messageThinkDurationPlural: 'Thought for {count} seconds',
   messageThinkStopped: 'Stopped',
