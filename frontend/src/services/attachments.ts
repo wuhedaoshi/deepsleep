@@ -84,7 +84,10 @@ export const partitionFiles = (
   const accepted: File[] = []
   let count = currentCount
   for (const file of files) {
-    if (!isAcceptedExt(file.name)) {
+    // 扩展名不可信：有的提供方给 `IMG_0001`、`temp` 这类名字，但 MIME 明确是 image/*。
+    // 判型最终以字节为准（`toSupportedImage` 会再核一次），这里放宽不会放过坏数据。
+    const looksImage = isImage(resolveMimeType(file))
+    if (!isAcceptedExt(file.name) && !looksImage) {
       rejected.push({ file, reason: 'format' })
       continue
     }
