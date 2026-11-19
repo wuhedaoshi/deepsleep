@@ -1,5 +1,10 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.3.18 · 实验线（相册选择结果解析修复）
+
+= 稳定线 1.2.18 全部内容。本版修的是**「相册选完图什么都没发生」**的根因：
+`FileChooserParams.parseResult` 在我们自建的 chooser 上会返回 null（真机日志 `code=-1 uris=null`），
+现改为手工解析 `ClipData` / `data`，相册走系统 Photo Picker，回调先清空再解析。
 ## 1.3.17 · 实验线（无扩展名图片 + 版本行）
 
 = 稳定线 1.2.17 全部内容（含压缩相关保持 1.3.16 状态）：
