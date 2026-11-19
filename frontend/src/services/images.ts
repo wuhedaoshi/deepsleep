@@ -241,7 +241,9 @@ const probeJpegSize = async (
  * 认得 PNG / JPEG / GIF / WebP / BMP；认不出、读头失败、或头被截断都返回 null，
  * 由调用方按「未知尺寸」保守处理。
  */
-const probeImageSize = async (blob: Blob): Promise<{ width: number; height: number } | null> => {
+const probeImageSize = async (
+  blob: Blob
+): Promise<{ width: number; height: number; format: DetectedFormat | null } | null> => {
   let head: Uint8Array
   try {
     // JPEG 的 SOF 段可能在 APPn/EXIF 之后很远，给 1 MB
@@ -253,17 +255,41 @@ const probeImageSize = async (blob: Blob): Promise<{ width: number; height: numb
     return null
   }
   try {
-    return probeHead(head)
+    const size = probeHead(head)
+    return size === null ? null : { ...size, format: detectImageFormat(head) }
   } catch {
     // 头被截断时 DataView 会抛 RangeError：当作「尺寸未知」而不是失败
     return null
   }
 }
 
+/** 文件头认出的真实格式；与 `blob.type` 无关（扩展名/MIME 经常和字节不符） */
+export type DetectedFormat = 'png' | 'jpeg' | 'gif' | 'webp' | 'bmp'
+
+/** 只看魔数判断真实格式；认不出返回 null */
+export const detectImageFormat = (head: Uint8Array): DetectedFormat | null => {
+  if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    return 'png'
+  }
+  if (head.length >= 2 && head[0] === 0xff && head[1] === 0xd8) {
+    return 'jpeg'
+  }
+  if (head.length >= 3 && head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
+    return 'gif'
+  }
+  if (head.length >= 12 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) {
+    return 'webp'
+  }
+  if (head.length >= 2 && head[0] === 0x42 && head[1] === 0x4d) {
+    return 'bmp'
+  }
+  return null
+}
+
 const probeHead = (head: Uint8Array): { width: number; height: number } | null => {
   const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
   // PNG：IHDR 宽高在 16..24
-  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47 && head.length >= 24) {
     return { width: view.getUint32(16), height: view.getUint32(20) }
   }
   // GIF：逻辑屏幕宽高在 6..10（小端）
@@ -386,15 +412,31 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
   const isJpeg = head.length >= 2 && head[0] === 0xff && head[1] === 0xd8
   // JPEG 的头窗口可能读不到 SOF（EXIF/ICC 段很大）：按段跳读再确认一次
   if (probed === null && isJpeg) {
-    probed = await probeJpegSize(blob)
+    const size = await probeJpegSize(blob)
+    probed = size === null ? null : { ...size, format: 'jpeg' }
   }
   if (probed !== null && probed.width * probed.height > MAX_PIXELS) {
     throw new ImageConvertError('tooLarge', '图片尺寸过大')
   }
-  const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
+  // 放行条件看**真实格式**：小红书这类 App 存下来的图常是 WebP/HEIC 却被命名成 .jpg、
+  // MIME 也报 image/jpeg，只按 `blob.type` 判断会把 WebP 当 JPEG 直接传给服务端。
+  const declared = SUPPORTED_IMAGE_TYPES.has(blob.type)
+  const actual = probed?.format ?? null
+  const actualSupported = actual === 'png' || actual === 'jpeg'
   const fits = probed !== null && Math.max(probed.width, probed.height) <= MAX_EDGE
-  if (supported && fits) {
-    return { blob, name, converted: false }
+  if (fits && actualSupported && (declared || actual === 'jpeg' || actual === 'png')) {
+    // 名字/MIME 与字节不符时也要纠正，否则服务端按扩展名解析仍会失败
+    const fixedName =
+      actual === 'png' && !/\.png$/i.test(name)
+        ? `${name.replace(/\.[^.]+$/, '')}.png`
+        : actual === 'jpeg' && !/\.(jpg|jpeg)$/i.test(name)
+          ? `${name.replace(/\.[^.]+$/, '')}.jpg`
+          : name
+    const fixedMime = actual === 'png' ? 'image/png' : 'image/jpeg'
+    if (fixedName === name && blob.type === fixedMime) {
+      return { blob, name, converted: false }
+    }
+    return { blob: new Blob([blob], { type: fixedMime }), name: fixedName, converted: true }
   }
   // 仍读不出像素数：容器结构不可信（段数过多、长度字段异常、或不认识的格式）。
   // 宁可明确拒绝，也不把未知大小的位图交给解码器——那是一台老设备最容易被 OOM 杀掉的地方。
@@ -519,3 +561,4 @@ export const createPreviewUrl = async (blob: Blob, name = 'preview'): Promise<st
     return null
   }
 }
+
