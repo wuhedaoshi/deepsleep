@@ -1,5 +1,23 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.18（修「相册选完图什么都没发生」——系统返回成功却没带文件）
+
+真机日志（Redmi / Android 16 / WebView 143）给出的证据：
+
+```
+[chooser] ask accept=[image/*] mimes=[image/*] mode=1
+[chooser] result code=-1 uris=null      ← 选了、确认了，但结果里没有任何 URI
+```
+
+`FileChooserParams.parseResult` 只保证认得 `createIntent()` 的产物，我们自建的 chooser 不在此列。
+
+- **结果改手工解析**：`ClipData`（多选）→ `data`（单选），只收 `content://`，用 `LinkedHashSet` 去重
+- **相册走系统 Photo Picker**（API 33+，`ACTION_PICK_IMAGES`），失败回落 `ACTION_OPEN_DOCUMENT`
+- **回调先清空再解析**：解析/日志任何一步抛错都仍 `onReceiveValue(null)`，避免 `<input type=file>` 永久挂起
+- `RESULT_OK` 却没 URI 时弹「未收到文件，请重选」
+- 时间戳改用 API 21 兼容实现（`Date.toInstant()` / `java.time` 是 API 26+，`minSdk = 21`）
+
+诊断日志现在一次记全：`code / hasData / clip 项数 / single 是否存在 / extras 键名 / delivered 数 / callback 是否存在`。
 ## 1.2.17（无扩展名图片也能发；设置里显示真实版本号）
 
 - 白名单放宽：`isAcceptedExt(name)` **或** `isImage(resolveMimeType(file))` 任一成立即接受——
