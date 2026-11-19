@@ -62,8 +62,13 @@ export const validateFiles = (files: File[], currentCount: number): TranslationM
   return null
 }
 
-/** 逐个文件的拒绝原因；只有「格式」和「体积」两种是添加前就能判定的 */
-export type FileRejection = { file: File; reason: 'format' | 'size'; limitMB?: number }
+/** 逐个文件的拒绝原因；格式、体积、数量是添加前就能判定的三种 */
+export type FileRejection = {
+  file: File
+  reason: 'format' | 'size' | 'count'
+  limitMB?: number
+  limitCount?: number
+}
 
 /**
  * 把一批文件拆成「可以添加」和「被拒绝」。
@@ -89,7 +94,7 @@ export const partitionFiles = (
       continue
     }
     if (count >= MAX_COUNT) {
-      rejected.push({ file, reason: 'size', limitMB: MAX_SIZE_MB })
+      rejected.push({ file, reason: 'count', limitCount: MAX_COUNT })
       continue
     }
     accepted.push(file)
@@ -97,6 +102,14 @@ export const partitionFiles = (
   }
   return { accepted, rejected }
 }
+
+/** 拒绝原因 → 用户可见文案 */
+export const describeFileRejection = (rejection: FileRejection): TranslationMessage =>
+  rejection.reason === 'format'
+    ? { key: 'uploadUnsupportedFormat' }
+    : rejection.reason === 'count'
+      ? { key: 'uploadMaxFiles', params: { count: rejection.limitCount ?? MAX_COUNT } }
+      : { key: 'uploadMaxMBSize', params: { size: rejection.limitMB ?? MAX_SIZE_MB } }
 
 /**
  * 上传失败在附件上显示的文案：与设计稿状态对应的用具体原因，其余统一「上传失败」。

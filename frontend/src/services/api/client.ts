@@ -120,9 +120,14 @@ export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promis
 }
 
 /**
- * POST /anthropic/v1/files 上传附件（不设过期时间，会话里的历史附件一直可用）。
- * purpose 为 null 时不传该字段（图片）；purpose 必须排在 file 之前。
+ * 上传附件。
+ *
+ * 两段都要有超时：请求阶段（等响应头）与读取阶段（拿 file_id 的 JSON）。
+ * 少了超时，一条卡住的请求会让附件永远停在 `uploading`，发送键一直灰着——
+ * 用户看到的就是「选了图没反应」。用户主动取消仍然优先（外部 signal 直接打断）。
  */
+const UPLOAD_TIMEOUT_MS = 120_000
+
 export const uploadFile = async (
   apiKey: string,
   file: File,
@@ -134,13 +139,32 @@ export const uploadFile = async (
     form.append('purpose', purpose)
   }
   form.append('file', file)
-  const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
-    method: 'POST',
-    headers: anthropicHeaders(apiKey, true),
-    body: form,
-    signal,
-  })
-  return (await response.json()) as FileObject
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, UPLOAD_TIMEOUT_MS)
+  const forwardAbort = () => controller.abort()
+  signal?.addEventListener('abort', forwardAbort, { once: true })
+  try {
+    const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
+      method: 'POST',
+      headers: anthropicHeaders(apiKey, true),
+      body: form,
+      signal: controller.signal,
+    })
+    // 响应体读取同样受这段超时覆盖（JSON 解析前 signal 仍有效）
+    return (await response.json()) as FileObject
+  } catch (error) {
+    if (timedOut && !signal?.aborted) {
+      throw new ApiError('timeout', 'upload timed out')
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', forwardAbort)
+  }
 }
 
 /** DELETE /anthropic/v1/files/{file_id} */
