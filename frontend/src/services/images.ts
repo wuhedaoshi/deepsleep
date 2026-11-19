@@ -404,20 +404,32 @@ export const isRiskyImageType = (mime: string): boolean => !SUPPORTED_IMAGE_TYPE
  */
 const MAX_DECODES = 2
 let decoding = 0
+let peakDecoding = 0
 const decodeWaiters: (() => void)[] = []
 
 const withDecodeSlot = async <T>(run: () => Promise<T>): Promise<T> => {
   if (decoding >= MAX_DECODES) {
+    // 等队首叫号：名额由上一个持有点**直接移交**，醒来后不再自增
     await new Promise<void>((resolve) => decodeWaiters.push(resolve))
+  } else {
+    decoding += 1
   }
-  decoding += 1
+  peakDecoding = Math.max(peakDecoding, decoding)
   try {
     return await run()
   } finally {
-    decoding -= 1
-    decodeWaiters.shift()?.()
+    const next = decodeWaiters.shift()
+    if (next === undefined) {
+      decoding -= 1
+    } else {
+      // 名额随交接走：先减再加会让第三方在中间抢到空位，实测峰值会到 MAX+1
+      next()
+    }
   }
 }
+
+/** 仅供验收脚本读取的并发峰值（生产代码不依赖它） */
+export const decodePeak = (): number => peakDecoding
 
 /**
  * 归一化的**单次**解码结果按源对象缓存。
