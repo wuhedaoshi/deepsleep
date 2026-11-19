@@ -93,7 +93,7 @@ export const addDraftFiles = (
 
 /** 异步补上缩略图：核不出尺寸（未知格式 / 超大）就不给预览，上传那条路会给出明确原因。 */
 const attachPreview = async (sessionId: string | null, id: string, file: File): Promise<void> => {
-  const url = await createPreviewUrl(file).catch(() => null)
+  const url = await createPreviewUrl(file, file.name).catch(() => null)
   if (url === null) {
     return
   }
