@@ -470,7 +470,13 @@ public class MainActivity extends Activity {
                     }
                     android.content.pm.PackageInfo self =
                             getPackageManager().getPackageInfo(getPackageName(), 0);
-                    json.put("versionCode", self.getLongVersionCode());
+                    // getLongVersionCode() 是 API 28+；老设备上调它会抛 NoSuchMethodError
+                    // （那是 Error 不是 Exception，catch (Exception) 接不住），必须按 SDK 分支
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        json.put("versionCode", self.getLongVersionCode());
+                    } else {
+                        json.put("versionCode", (long) self.versionCode);
+                    }
                     json.put("versionName", self.versionName);
                     json.put("rendererRebuilds", rendererRebuilds);
                 } catch (Exception ignored) {
