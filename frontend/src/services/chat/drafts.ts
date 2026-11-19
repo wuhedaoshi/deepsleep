@@ -2,13 +2,15 @@ import { create } from 'zustand'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { createId } from '../../utils/id.js'
 import {
+  MAX_SIZE_MB,
   cancelUpload,
   isImage,
+  partitionFiles,
   resolveMimeType,
   uploadAttachment,
-  validateFiles,
   type UploadTask,
 } from '../attachments.js'
+import { logError, logInfo } from '../log.js'
 import { createPreviewUrl } from '../images.js'
 import type { FileAttachment } from './types.js'
 
@@ -67,11 +69,24 @@ export const addDraftFiles = (
   if (files.length === 0) {
     return null
   }
-  const error = validateFiles(files, getDraft(sessionId).attachments.length)
-  if (error) {
-    return error
+  // 逐个文件判定：一张不合格不该让整批都加不进来（否则用户看到「选了没反应」）
+  const { accepted, rejected } = partitionFiles(files, getDraft(sessionId).attachments.length)
+  for (const { file, reason, limitMB } of rejected) {
+    logError('upload', '附件被本地规则拒绝', {
+      name: file.name,
+      size: file.size,
+      mime: file.type,
+      reason,
+      limitMB,
+    })
   }
-  const added = files.map((file): DraftAttachment => {
+  if (accepted.length === 0) {
+    const first = rejected[0]
+    return first.reason === 'format'
+      ? { key: 'uploadUnsupportedFormat' }
+      : { key: 'uploadMaxMBSize', params: { size: first.limitMB ?? MAX_SIZE_MB } }
+  }
+  const added = accepted.map((file): DraftAttachment => {
     const image = isImage(resolveMimeType(file))
     return {
       id: createId(),
@@ -81,6 +96,13 @@ export const addDraftFiles = (
       previewUrl: null,
     }
   })
+  logInfo('upload', '草稿接收附件', {
+    sessionId: sessionId ?? null,
+    accepted: accepted.length,
+    rejected: rejected.length,
+    ids: added.map((item) => item.id),
+    names: added.map((item) => item.file.name),
+  })
   updateDraft(sessionId, (draft) => ({ ...draft, attachments: [...draft.attachments, ...added] }))
   added.forEach((attachment) => {
     if (attachment.isImage) {
@@ -88,6 +110,13 @@ export const addDraftFiles = (
     }
     upload(attachment, apiKey)
   })
+  // 部分被拒时也要说清楚：返回第一条原因，调用方会以 toast 显示
+  const firstRejected = rejected[0]
+  if (firstRejected !== undefined) {
+    return firstRejected.reason === 'format'
+      ? { key: 'uploadUnsupportedFormat' }
+      : { key: 'uploadMaxMBSize', params: { size: firstRejected.limitMB ?? MAX_SIZE_MB } }
+  }
   return null
 }
 

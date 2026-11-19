@@ -2,14 +2,18 @@ import { create } from 'zustand'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
 import { uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
+import { ApiError } from './api/client.js'
 import type { FilePurpose } from './api/types.js'
-import { ACCEPT_FILE_EXTS } from './uploadExts.js'
-import { normalizeImage } from './images.js'
+import { ACCEPT_FILE_EXTS, IMAGE_FILE_EXTS } from './uploadExts.js'
+import { ImageConvertError, normalizeImage } from './images.js'
+import { logError, logInfo } from './log.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
 export const ACCEPTED_EXTS = ACCEPT_FILE_EXTS
 /** 选择文件对话框的过滤条件 */
 export const ACCEPT = ACCEPTED_EXTS.map((ext) => `.${ext}`).join(',')
+/** 能真正处理（探测 + 转换）的图片扩展名；校验用，不再用于选择器过滤 */
+export const PROCESSABLE_IMAGE_EXTS = IMAGE_FILE_EXTS
 /** 单文件大小上限与 Files API 一致 */
 export const MAX_SIZE_MB = 64
 /** 按 user_data 上传的文件（纯文本、代码、表格、电子书）原文件上限更小 */
@@ -58,11 +62,58 @@ export const validateFiles = (files: File[], currentCount: number): TranslationM
   return null
 }
 
+/** 逐个文件的拒绝原因；只有「格式」和「体积」两种是添加前就能判定的 */
+export type FileRejection = { file: File; reason: 'format' | 'size'; limitMB?: number }
+
+/**
+ * 把一批文件拆成「可以添加」和「被拒绝」。
+ *
+ * 为什么不再整批拒绝：一个 HEIC 混在 5 张 JPEG 里时，整批不添加会让用户
+ * 看到「选了图却没反应」——既不知道是哪张，也不知道为什么。
+ */
+export const partitionFiles = (
+  files: File[],
+  currentCount: number
+): { accepted: File[]; rejected: FileRejection[] } => {
+  const rejected: FileRejection[] = []
+  const accepted: File[] = []
+  let count = currentCount
+  for (const file of files) {
+    if (!isAcceptedExt(file.name)) {
+      rejected.push({ file, reason: 'format' })
+      continue
+    }
+    const limitMB = getMaxSizeMB(file)
+    if (file.size > limitMB * 1024 * 1024) {
+      rejected.push({ file, reason: 'size', limitMB })
+      continue
+    }
+    if (count >= MAX_COUNT) {
+      rejected.push({ file, reason: 'size', limitMB: MAX_SIZE_MB })
+      continue
+    }
+    accepted.push(file)
+    count += 1
+  }
+  return { accepted, rejected }
+}
+
 /**
  * 上传失败在附件上显示的文案：与设计稿状态对应的用具体原因，其余统一「上传失败」。
  * 服务端原文多为英文且较长，不直接展示。
  */
 export const describeUploadError = (error: unknown): TranslationMessage => {
+  // 本地图片处理的失败原因要具体：格式、尺寸、解不开是三种不同的处置方式，
+  // 落到「上传失败」会让用户一直重试一张永远失败的图。
+  if (error instanceof ImageConvertError) {
+    const key =
+      error.reason === 'tooLarge'
+        ? 'uploadImageTooLarge'
+        : error.reason === 'unsupported'
+          ? 'uploadImageFormat'
+          : 'uploadImageUndecodable'
+    return { key }
+  }
   // 别把一切都叫「上传失败」：Key 无效和断网都被这么显示过，
   // 用户会以为是文件问题（真实成因见 issue：Key 填错 → 上传 401 → 提示「上传失败」）。
   const condition = classifyApiError(error)
@@ -147,6 +198,7 @@ const enqueueUpload = (
         return
       }
       try {
+        const startedAt = Date.now()
         let body = file instanceof File ? file : new File([file], name, { type: file.type })
         let uploadName = name
         if (isImage) {
@@ -155,8 +207,28 @@ const enqueueUpload = (
           const normalized = await normalizeImage(body, name)
           body = new File([normalized.blob], normalized.name, { type: normalized.blob.type })
           uploadName = normalized.name
+          logInfo('upload', '图片已准备', {
+            name,
+            uploadName,
+            converted: normalized.converted,
+            inBytes: file.size,
+            outBytes: normalized.blob.size,
+            outType: normalized.blob.type,
+            ms: Date.now() - startedAt,
+          })
         }
-        resolve((await uploadFile(apiKey, body, getUploadPurpose(uploadName, isImage), signal)).id)
+        const uploaded = await uploadFile(apiKey, body, getUploadPurpose(uploadName, isImage), signal)
+        if (typeof uploaded.id !== 'string' || uploaded.id === '') {
+          // 2xx 但没拿到 file_id：继续下去会「显示完成却发不出去」，必须当失败
+          throw new Error('uploadFile: missing file id')
+        }
+        logInfo('upload', '上传完成', {
+          name: uploadName,
+          purpose: getUploadPurpose(uploadName, isImage),
+          bytes: body.size,
+          ms: Date.now() - startedAt,
+        })
+        resolve(uploaded.id)
       } catch (error) {
         reject(error)
       }
@@ -210,10 +282,21 @@ export const uploadAttachment = (
       if (controller.signal.aborted) {
         setTask(id, null)
       } else {
+        // 这条日志是「选了图却没反应」的唯一线索：记下名字、体积、MIME 与失败原因
+        logError('upload', '附件上传失败', {
+          name,
+          size: blob.size,
+          mime: blob.type,
+          isImage,
+          reason: error instanceof ImageConvertError ? error.reason : undefined,
+          kind: error instanceof ApiError ? error.kind : 'unknown',
+          status: error instanceof ApiError ? error.status : undefined,
+        })
         setTask(id, {
           status: 'error',
           error: describeUploadError(error),
-          retryable: isRetryableApiError(error),
+          // 本地转换失败重试没有意义（同一张图会同样失败）
+          retryable: error instanceof ImageConvertError ? false : isRetryableApiError(error),
         })
         const notice = describeUploadQuota(error)
         if (notice) {

@@ -7,6 +7,7 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
+import { logError, logInfo } from '../../services/log.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
@@ -79,11 +80,25 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }, [t])
 
 const acceptFiles = (files: File[]) => {
+    // 这条日志是「选完图什么都没发生」的第一现场：没有它只能猜是选择器还是上传
+    logInfo('upload', '收到选择结果', {
+      count: files.length,
+      names: files.slice(0, 5).map((file) => file.name),
+      types: files.slice(0, 5).map((file) => file.type),
+      sizes: files.slice(0, 5).map((file) => file.size),
+      sessionId: sessionId ?? null,
+    })
     if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
+      logError('upload', '选择结果被丢弃', {
+        count: files.length,
+        importing: useChatStore.getState().importingHistory,
+        hasApiKey: (useSettings.getState().apiKey ?? '') !== '',
+      })
       return
     }
     const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
     if (error) {
+      logError('upload', '附件未被接受', { key: error.key, params: error.params })
       showToast(error)
     }
   }

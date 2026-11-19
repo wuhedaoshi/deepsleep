@@ -389,25 +389,48 @@ public class MainActivity extends Activity {
                     Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE);
                     // accept 可能有两种形态：真正的 MIME（相册传 image/*）和扩展名列表
-                    // （文件传 .pdf,.docx,…）。前者要保留，否则相册会退化成“全部文件”；
-                    // 后者不能塞进 MIME 过滤，否则文件管理器会过滤掉一切、显示空的“最近”。
+                    // （文件传 .pdf,.docx,…）。两者都要能映射成 MIME，否则
+                    // `setType("*/*")` 会让相册退化成「全部文件」，用户能点进 HEIC/AVIF
+                    // 这类本机解不了的格式——表现就是「选完图什么都没发生」。
                     String[] accept = params.getAcceptTypes();
-                    String mime = null;
+                    java.util.LinkedHashSet<String> mimes = new java.util.LinkedHashSet<>();
                     if (accept != null) {
                         for (String candidate : accept) {
-                            if (candidate != null && candidate.contains("/")) {
-                                mime = candidate;
-                                break;
+                            if (candidate == null || candidate.isEmpty()) {
+                                continue;
+                            }
+                            if (candidate.contains("/")) {
+                                mimes.add(candidate);
+                                continue;
+                            }
+                            String ext = candidate.startsWith(".") ? candidate.substring(1) : candidate;
+                            String mapped = android.webkit.MimeTypeMap.getSingleton()
+                                    .getMimeTypeFromExtension(ext.toLowerCase(java.util.Locale.ROOT));
+                            if (mapped != null) {
+                                mimes.add(mapped);
                             }
                         }
                     }
-                    intent.setType(mime != null ? mime : "*/*");
+                    if (mimes.isEmpty()) {
+                        intent.setType("*/*");
+                    } else if (mimes.size() == 1) {
+                        intent.setType(mimes.iterator().next());
+                    } else {
+                        // 多个具体类型：EXTRA_MIME_TYPES 配合 */* 才是正确的多类型过滤
+                        intent.setType("*/*");
+                        intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
+                    }
                     if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
                         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                     }
+                    appendLogLine(new java.util.Date().toInstant().toString() + " INFO [chooser] ask"
+                            + " accept=" + java.util.Arrays.toString(accept)
+                            + " mimes=" + mimes
+                            + " mode=" + params.getMode());
                     startActivityForResult(intent, REQ_FILE_CHOOSER);
                     return true;
                 } catch (Exception e) {
+                    appendLogLine(new java.util.Date().toInstant().toString() + " ERROR [chooser] launch failed: " + e);
                     filePathCallback = null;
                     return false;
                 }
@@ -672,6 +695,9 @@ public class MainActivity extends Activity {
         }
         if (requestCode == REQ_FILE_CHOOSER) {
             Uri[] uris = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            appendLogLine(new java.util.Date().toInstant().toString() + " INFO [chooser] result"
+                    + " code=" + resultCode
+                    + " uris=" + (uris == null ? "null" : String.valueOf(uris.length)));
             // 把读取权限持久化：导入几百 MB 的归档要跑好几分钟，中途 Activity 重建后
             // content:// 的临时授权就没了，用户得重新选一次文件才能续传。
             // 云盘/部分文件管理器不支持持久授权，失败也不影响本次导入。

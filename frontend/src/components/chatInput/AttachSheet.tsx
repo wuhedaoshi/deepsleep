@@ -10,6 +10,10 @@ import styles from './AttachSheet.module.css'
  *
  * 三个隐藏 input 各管一路：拍照要 capture 属性才能唤起相机，相册限图片，
  * 文件走完整的 ACCEPT 列表。
+ *
+ * 相册用宽过滤 `image/*` 而不是具体 MIME 清单：部分文件提供方会把 JPEG 标成
+ * `application/octet-stream`，精确过滤会让相册显示成空列表。HEIC/AVIF 这类本机
+ * 解不了的格式由 JS 校验拦下并给出具体原因（见 `partitionFiles` / `describeUploadError`）。
  */
 export const AttachSheet = ({
   open,
