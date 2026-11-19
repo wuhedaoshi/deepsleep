@@ -64,7 +64,8 @@ const upload = (attachment: DraftAttachment, apiKey: string) => {
 export const addDraftFiles = (
   sessionId: string | null,
   files: File[],
-  apiKey: string
+  apiKey: string,
+  diag = ''
 ): TranslationMessage | null => {
   if (files.length === 0) {
     return null
@@ -73,6 +74,7 @@ export const addDraftFiles = (
   const { accepted, rejected } = partitionFiles(files, getDraft(sessionId).attachments.length)
   for (const { file, reason, limitMB } of rejected) {
     logError('upload', '附件被本地规则拒绝', {
+      diag,
       name: file.name,
       size: file.size,
       mime: file.type,
@@ -94,6 +96,7 @@ export const addDraftFiles = (
     }
   })
   logInfo('upload', '草稿接收附件', {
+    diag,
     sessionId: sessionId ?? null,
     accepted: accepted.length,
     rejected: rejected.length,
