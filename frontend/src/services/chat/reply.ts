@@ -170,6 +170,11 @@ export const getReplyText = (reply: AssistantMessage) =>
  * 服务端模板提示不能作为续写前缀。
  */
 export const canContinueReply = (reply: AssistantMessage): boolean => {
+  // `pause_turn` 是服务端主动暂停（往往正卡在工具调用中途），语义上就该续请求；
+  // 下面「有工具块就不能续写」的规则针对的是正常结束的轮次，对暂停不适用。
+  if (reply.stopReason === 'pause_turn') {
+    return reply.prefix
+  }
   if (
     !reply.prefix ||
     reply.stopReason === 'refusal' ||

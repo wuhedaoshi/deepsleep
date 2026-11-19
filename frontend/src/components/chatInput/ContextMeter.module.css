@@ -3,12 +3,32 @@
   align-items: center;
   gap: 5px;
   padding: 1px 6px;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
   color: var(--text-tertiary, #9ca3af);
   font-size: 12px;
+  font-family: inherit;
   font-variant-numeric: tabular-nums;
   line-height: 18px;
-  cursor: default;
+  /* 点圆环 = 立刻压缩一次历史（原来 cursor 是 default，看不出可以点） */
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.meter:hover:not(:disabled) {
+  background: var(--surface-tertiary, rgba(127, 127, 127, 0.12));
+  color: var(--text-secondary, #6b7280);
+}
+
+.meter:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.meter:focus-visible {
+  outline: 2px solid var(--accent-primary, #4d6bfe);
+  outline-offset: 2px;
 }
 
 .ring {

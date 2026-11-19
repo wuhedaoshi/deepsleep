@@ -1241,7 +1241,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             frame ||= requestAnimationFrame(flush)
           }
         }
-        reply = settleReply(reply, 'done', Date.now())
+        // `pause_turn` 表示服务端主动暂停（通常还带着未完成的工具轮次）：
+        // 不能当成正常结束，否则这条回答会被标成「已完成」、续写按钮也不再出现。
+        reply = settleReply(
+          reply,
+          reply.stopReason === 'pause_turn' ? 'stopped' : 'done',
+          Date.now()
+        )
         break
       } catch (error) {
         if (controller.signal.aborted) {

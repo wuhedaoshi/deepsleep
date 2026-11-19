@@ -36,33 +36,78 @@ export type NormalizedImage = {
 
 const withJpegName = (name: string) => `${name.replace(/\.[^.]+$/, '')}.jpg`
 
-/** 用 canvas 把任意可解码的图片画成 JPEG；Node 等没有 canvas 的环境返回 null */
-const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
-  if (typeof document === 'undefined' || typeof createImageBitmap !== 'function') {
-    return null
+/**
+ * 解码一张图，拿到可画进 canvas 的源。
+ *
+ * 两条通路：
+ * 1. `createImageBitmap`（Chrome 50+，走解码器，快）
+ * 2. `<img>` + object URL（老 WebView 没有 createImageBitmap 时唯一可用的路；
+ *    这条能解 webp / bmp / gif，正是老设备上报「图片格式不支持」的根因）
+ */
+type Drawable = { source: CanvasImageSource; width: number; height: number; close: () => void }
+
+const loadViaImageElement = (blob: Blob): Promise<Drawable> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob)
+    const image = new Image()
+    const cleanup = () => URL.revokeObjectURL(url)
+    image.onload = () => {
+      resolve({
+        source: image,
+        width: image.naturalWidth || image.width,
+        height: image.naturalHeight || image.height,
+        close: cleanup,
+      })
+    }
+    image.onerror = () => {
+      cleanup()
+      reject(new ImageConvertError('图片无法解码'))
+    }
+    image.src = url
+  })
+
+const loadDrawable = async (blob: Blob): Promise<Drawable> => {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob)
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => bitmap.close(),
+      }
+    } catch {
+      // 解码器不认这个格式（老 WebView 常见）：退回 <img>
+    }
   }
-  let bitmap: ImageBitmap
-  try {
-    bitmap = await createImageBitmap(blob)
-  } catch {
+  if (typeof Image === 'undefined') {
     throw new ImageConvertError('图片无法解码')
   }
-  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height))
-  const width = Math.max(1, Math.round(bitmap.width * scale))
-  const height = Math.max(1, Math.round(bitmap.height * scale))
+  return loadViaImageElement(blob)
+}
+
+/** 用 canvas 把任意可解码的图片画成 JPEG；没有 canvas 的环境返回 null */
+const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
+  if (typeof document === 'undefined') {
+    return null
+  }
+  const drawable = await loadDrawable(blob)
+  const scale = Math.min(1, MAX_EDGE / Math.max(drawable.width, drawable.height))
+  const width = Math.max(1, Math.round(drawable.width * scale))
+  const height = Math.max(1, Math.round(drawable.height * scale))
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
   const context = canvas.getContext('2d')
   if (!context) {
-    bitmap.close()
+    drawable.close()
     return null
   }
   // JPEG 没有透明通道，先铺白底，否则透明区会变成黑色
   context.fillStyle = '#fff'
   context.fillRect(0, 0, width, height)
-  context.drawImage(bitmap, 0, 0, width, height)
-  bitmap.close()
+  context.drawImage(drawable.source, 0, 0, width, height)
+  drawable.close()
   const output = await new Promise<Blob | null>((resolve) => {
     canvas.toBlob((result) => resolve(result), 'image/jpeg', JPEG_QUALITY)
   })
@@ -74,28 +119,31 @@ const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
 
 /**
  * 把图片变成服务端能吃的格式。
+ *
  * 已经是 jpeg/png 且尺寸不超限时原样返回（不重新编码，避免无谓掉质量）。
+ * 尺寸判断走 `loadDrawable`：老 WebView 没有 `createImageBitmap` 时也能量出长边，
+ * 否则超大 PNG 会带着原尺寸上传，服务端同样会拒。
  */
 export const toSupportedImage = async (blob: Blob, name: string): Promise<NormalizedImage> => {
   const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
-  // 尺寸未知时（Node / 老 WebView）只按 MIME 判断
   let oversized = false
-  if (supported && typeof createImageBitmap === 'function') {
+  let decodable = true
+  if (supported) {
     try {
-      const bitmap = await createImageBitmap(blob)
-      oversized = Math.max(bitmap.width, bitmap.height) > MAX_EDGE
-      bitmap.close()
+      const drawable = await loadDrawable(blob)
+      oversized = Math.max(drawable.width, drawable.height) > MAX_EDGE
+      drawable.close()
     } catch {
-      // 解不开就交给下面的转换分支处理
-      oversized = true
+      // 解不开就交给下面的转换分支；再失败会让调用方给出明确提示
+      decodable = false
     }
   }
-  if (supported && !oversized) {
+  if (supported && decodable && !oversized) {
     return { blob, name, converted: false }
   }
   const jpeg = await drawToJpeg(blob)
   if (jpeg === null) {
-    // 没有 canvas（Node / 老 WebView）：原样返回，让服务端去判，至少不比现在更差
+    // 没有 canvas（Node）：原样返回，让服务端去判
     return { blob, name, converted: false }
   }
   return { blob: jpeg, name: withJpegName(name), converted: true }
