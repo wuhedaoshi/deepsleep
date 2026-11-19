@@ -218,30 +218,70 @@ const probeJpegSize = async (
  * AVIF / HEIF：ISOBMFF 容器的 `ispe` 盒里有显示宽高。
  *
  * 为什么不靠解码器：一张 1042 字节的 AVIF 就能声明 8192×8192，交给解码器等于让它
- * 直接申请 268 MP 的位图。`ispe` 是纯字节解析，成本可忽略。
+ * 直接申请 268 MP 的位图。
+ *
+ * 为什么必须走盒结构而不是全文搜 `ispe` 字样：`free`/`skip` 盒里可以有任意字节，
+ * 搜字样会把盒外数据当成尺寸——既可能漏掉超大主图，也可能把一张 128×128 的正常图误拒。
+ * 这里按 size/type 逐盒走，只认 `meta → iprp → ipco` 里的 `ispe`。
  */
-const probeIsoBmff = (head: Uint8Array): { width: number; height: number } | null => {
-  // ftyp 的品牌里出现 avif/avis/heic/heix/mif1 才按这类容器处理
-  const brand = String.fromCharCode(head[8], head[9], head[10], head[11])
-  if (!['avif', 'avis', 'heic', 'heix', 'mif1', 'msf1'].includes(brand)) {
+const ISO_BMFF_BRANDS = ['avif', 'avis', 'heic', 'heix', 'mif1', 'msf1']
+
+/** 只在这些容器盒里继续走；其余盒整体跳过（`free` 之类就在这一步被排除） */
+const ISO_BMFF_CONTAINERS = new Set(['meta', 'iprp', 'ipco'])
+
+const fourCC = (head: Uint8Array, at: number): string =>
+  String.fromCharCode(head[at], head[at + 1], head[at + 2], head[at + 3])
+
+type Size = { width: number; height: number }
+
+const walkIsoBmff = (view: DataView, head: Uint8Array, start: number, end: number, found: Size[]): void => {
+  let at = start
+  while (at + 8 <= end) {
+    let size = view.getUint32(at)
+    const type = fourCC(head, at + 4)
+    let header = 8
+    if (size === 1) {
+      // 64 位 largesize
+      if (at + 16 > end) {
+        return
+      }
+      size = Number(view.getBigUint64(at + 8))
+      header = 16
+    } else if (size === 0) {
+      size = end - at
+    }
+    if (size < header || at + size > end) {
+      return
+    }
+    if (type === 'ispe') {
+      // FullBox：version/flags(4) + width(4) + height(4)
+      const body = at + header + 4
+      if (body + 8 <= at + size) {
+        found.push({ width: view.getUint32(body), height: view.getUint32(body + 4) })
+      }
+    } else if (ISO_BMFF_CONTAINERS.has(type)) {
+      // `meta` 是 FullBox，子盒从 version/flags 之后开始
+      walkIsoBmff(view, head, at + header + (type === 'meta' ? 4 : 0), at + size, found)
+    }
+    at += size
+  }
+}
+
+const probeIsoBmff = (head: Uint8Array): Size | null => {
+  if (head.length < 16 || fourCC(head, 4) !== 'ftyp' || !ISO_BMFF_BRANDS.includes(fourCC(head, 8))) {
     return null
   }
-  // 扫描所有 `ispe`（盒体 = version/flags(4) + width(4) + height(4)），取**最大**的那个。
-  // 只取第一个会被缩略图的 ispe 骗过：主图 8192×8192 + 缩略图 128×128 时，
-  // 首个 ispe 往往是缩略图，于是超大主图混过闸门。
-  let largest: { width: number; height: number } | null = null
-  for (let at = 0; at + 16 <= head.length; at += 1) {
-    if (head[at] !== 0x69 || head[at + 1] !== 0x73 || head[at + 2] !== 0x70 || head[at + 3] !== 0x65) {
+  const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
+  const found: Size[] = []
+  walkIsoBmff(view, head, 0, head.length, found)
+  // 主图与缩略图各有 ispe：取最大，避免缩略图掩盖主图
+  let largest: Size | null = null
+  for (const size of found) {
+    if (size.width === 0 || size.height === 0) {
       continue
     }
-    const view = new DataView(head.buffer, head.byteOffset + at, 16)
-    const width = view.getUint32(8)
-    const height = view.getUint32(12)
-    if (width === 0 || height === 0) {
-      continue
-    }
-    if (largest === null || width * height > largest.width * largest.height) {
-      largest = { width, height }
+    if (largest === null || size.width * size.height > largest.width * largest.height) {
+      largest = size
     }
   }
   return largest
