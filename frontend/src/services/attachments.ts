@@ -340,7 +340,23 @@ const MIME_BY_EXT: Record<string, string> = {
 }
 
 /** 取文件的 MIME：优先用浏览器给出的类型，缺失时按扩展名推断 */
-export const resolveMimeType = (file: File) => file.type || MIME_BY_EXT[getFileExt(file.name)] || ''
+/** 提供方常把这些当成「通用二进制」报上来，此时只能靠扩展名判断 */
+const GENERIC_MIME = new Set(['application/octet-stream', 'binary/octet-stream', 'application/unknown', 'application/octet'])
+
+/**
+ * 推断 MIME。
+ *
+ * 不能只看 `file.type`：相册/文件提供方经常把 `.jpg` 报成 `application/octet-stream`，
+ * 那样这张图会被当文档上传，绕过图片归一化——冒充 JPEG 的 WebP 就会原样送到服务端。
+ * 所以 MIME 为空或为通用二进制时，用扩展名兜底。
+ */
+export const resolveMimeType = (file: File) => {
+  const declared = file.type.toLowerCase()
+  if (declared !== '' && !GENERIC_MIME.has(declared)) {
+    return declared
+  }
+  return MIME_BY_EXT[getFileExt(file.name)] ?? declared
+}
 
 export const isImage = (mimeType: string) => mimeType.startsWith('image/')
 
