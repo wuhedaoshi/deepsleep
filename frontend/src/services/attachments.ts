@@ -331,12 +331,21 @@ export const cancelUpload = (id: string) => {
 }
 
 /** 各扩展名对应的 MIME：部分系统（如 Windows）给不出 file.type，按扩展名补齐 */
+/**
+ * 扩展名 → MIME。
+ *
+ * 必须覆盖 `IMAGE_FILE_EXTS` 里的**每一项**：漏掉的扩展名在 MIME 缺失或为通用二进制时
+ * 会退回「文档」，从而绕过图片归一化（`.apng`/`.jfif`/`.bmp` 就漏过一次）。
+ */
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
+  apng: 'image/apng',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
+  jfif: 'image/jpeg',
   gif: 'image/gif',
   webp: 'image/webp',
+  bmp: 'image/bmp',
 }
 
 /** 取文件的 MIME：优先用浏览器给出的类型，缺失时按扩展名推断 */
