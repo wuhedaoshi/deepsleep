@@ -651,6 +651,18 @@ const showCompactOutcome = (outcome: ManualCompactionOutcome) => {
 }
 
 /**
+ * 手动压缩并提示结果。
+ *
+ * 压缩不产生消息，用户唯一的反馈就是这条 toast——所以**所有**触发入口
+ * （输入框 `/compact`、点用量圆环）都必须走这里，别各写一遍。
+ */
+export const compactWithFeedback = (sessionId: string): void => {
+  void compactNow(sessionId).then((outcome) => {
+    showCompactOutcome(outcome)
+  })
+}
+
+/**
  * 手动压缩（对应 DSH 的 `/compact`）：跳过阈值判断，只要存在可压区间就压一次。
  *
  * 与自动压缩共用 `compactSession`，差别只有两点：不做 token 压力判定、不重试。
@@ -717,9 +729,7 @@ export const sendMessage = (targetSessionId: string | null) => {
   // `/compact`：本地指令，不进对话也不发请求。
   if (TEXT_COMPACT_COMMAND.test(text) && targetSessionId !== null) {
     clearSentDraft(targetSessionId)
-    void compactNow(targetSessionId).then((outcome) => {
-      showCompactOutcome(outcome)
-    })
+    compactWithFeedback(targetSessionId)
     return true
   }
   const now = Date.now()

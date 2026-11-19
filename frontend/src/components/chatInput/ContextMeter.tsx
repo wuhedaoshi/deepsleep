@@ -1,5 +1,5 @@
 import { useTranslate } from '../../i18n/index.js'
-import { compactNow, useChatStore } from '../../services/chat/store.js'
+import { compactWithFeedback, useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
 import { DEFAULT_MODEL, evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
 import { getContextRounds } from '../../services/chat/reply.js'
@@ -51,7 +51,7 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
     if (sessionId === null || busy) {
       return
     }
-    void compactNow(sessionId)
+    compactWithFeedback(sessionId)
   }
   return (
     <Tooltip content={t('contextUsageTooltip', {
