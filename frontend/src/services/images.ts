@@ -25,12 +25,6 @@ const MAX_EDGE = 2048
 const MAX_PIXELS = 40_000_000
 
 /**
- * 字节上限（24 MB）。
- *
- * 读不出尺寸时（少见格式、JPEG 的 SOF 在 1 MB 之后被截断）只能按体积兜底：
- * 超过这个量级就不解码，宁可拒绝也不要让老设备 OOM。
- */
-const MAX_BYTES = 24 * 1024 * 1024
 
 /** JPEG 质量：0.9 在截图上肉眼无损 */
 const JPEG_QUALITY = 0.9
@@ -163,7 +157,7 @@ const probeJpegSize = async (
 ): Promise<{ width: number; height: number } | null> => {
   let at = 2
   for (let step = 0; step < limit && at + 4 <= blob.size; step += 1) {
-    const window = await readHeadBytes(blob.slice(at, Math.min(at + 16, blob.size)), 16)
+    let window = await readHeadBytes(blob.slice(at, Math.min(at + 16, blob.size)), 16)
     if (window.length < 2) {
       return null
     }
@@ -171,8 +165,24 @@ const probeJpegSize = async (
       return null
     }
     let cursor = 0
-    while (cursor + 1 < window.length && window[cursor + 1] === 0xff) {
-      cursor += 1
+    // `FF` 填充可以比 16 字节窗口更长：窗口内跑完就往后挪一点继续跳，
+    // 否则合法 JPEG 会在跳过填充时被判成「尺寸未知」而误拒。
+    for (;;) {
+      while (cursor + 1 < window.length && window[cursor + 1] === 0xff) {
+        cursor += 1
+      }
+      if (cursor + 1 < window.length) {
+        break
+      }
+      at += cursor
+      if (at + 4 > blob.size) {
+        return null
+      }
+      window = await readHeadBytes(blob.slice(at, Math.min(at + 16, blob.size)), 16)
+      if (window.length < 2 || window[0] !== 0xff) {
+        return null
+      }
+      cursor = 0
     }
     const marker = window[cursor + 1]
     // 无长度的独立标记
@@ -198,6 +208,33 @@ const probeJpegSize = async (
       return { height: (body[5] << 8) | body[6], width: (body[7] << 8) | body[8] }
     }
     at += cursor + 2 + size
+  }
+  return null
+}
+
+/**
+ * AVIF / HEIF：ISOBMFF 容器的 `ispe` 盒里有显示宽高。
+ *
+ * 为什么不靠解码器：一张 1042 字节的 AVIF 就能声明 8192×8192，交给解码器等于让它
+ * 直接申请 268 MP 的位图。`ispe` 是纯字节解析，成本可忽略。
+ */
+const probeIsoBmff = (head: Uint8Array): { width: number; height: number } | null => {
+  // ftyp 的品牌里出现 avif/avis/heic/heix/mif1 才按这类容器处理
+  const brand = String.fromCharCode(head[8], head[9], head[10], head[11])
+  if (!['avif', 'avis', 'heic', 'heix', 'mif1', 'msf1'].includes(brand)) {
+    return null
+  }
+  // 扫描 `ispe`：盒体是 version/flags(4) + width(4) + height(4)
+  for (let at = 0; at + 16 <= head.length; at += 1) {
+    if (head[at] !== 0x69 || head[at + 1] !== 0x73 || head[at + 2] !== 0x70 || head[at + 3] !== 0x65) {
+      continue
+    }
+    const view = new DataView(head.buffer, head.byteOffset + at, 16)
+    const width = view.getUint32(8)
+    const height = view.getUint32(12)
+    if (width > 0 && height > 0) {
+      return { width, height }
+    }
   }
   return null
 }
@@ -259,6 +296,10 @@ const probeHead = (head: Uint8Array): { width: number; height: number } | null =
   const bmp = probeBmp(head, view)
   if (bmp !== null) {
     return bmp
+  }
+  const isobmff = probeIsoBmff(head)
+  if (isobmff !== null) {
+    return isobmff
   }
   // JPEG：扫段找 SOF0..SOF3 / SOF5..SOF7 / SOF9..SOF11 / SOF13..SOF15
   if (head[0] === 0xff && head[1] === 0xd8) {
@@ -364,14 +405,10 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
   if (supported && fits) {
     return { blob, name, converted: false }
   }
-  // JPEG 仍读不出尺寸：段结构已经不可信（超过 512 段或长度字段异常），
-  // 与其把未知大小的位图交给解码器，不如拒绝。
-  if (probed === null && isJpeg) {
-    throw new ImageConvertError('图片尺寸过大')
-  }
-  // 其它格式读不出尺寸时按体积兜底
-  if (probed === null && blob.size > MAX_BYTES) {
-    throw new ImageConvertError('图片尺寸过大')
+  // 仍读不出像素数：容器结构不可信（段数过多、长度字段异常、或不认识的格式）。
+  // 宁可明确拒绝，也不把未知大小的位图交给解码器——那是一台老设备最容易被 OOM 杀掉的地方。
+  if (probed === null) {
+    throw new ImageConvertError(isJpeg ? '图片尺寸过大' : '图片格式无法识别')
   }
   const jpeg = await drawToJpeg(blob)
   if (jpeg === null) {
