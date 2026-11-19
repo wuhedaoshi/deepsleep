@@ -62,6 +62,72 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE_CHOOSER = 1001;
     private static final int REQ_CAMERA = 1002;
     private static final int REQ_SAVE_ARCHIVE = 1003;
+    /** 系统相册（Photo Picker，API 33+） */
+    private static final int REQ_PICK_IMAGES = 1004;
+    /** 相册多选的请求上限；实际会与系统上限取小 */
+    private static final int PICK_IMAGES_MAX = 50;
+
+    /** 日志前缀用的 ISO 时间 */
+    private static String javaDate() {
+        return java.util.Date.from(java.time.Instant.now()).toInstant().toString();
+    }
+
+    /**
+     * 从 Activity 结果里取回选中的 URI。
+     *
+     * 故意不用 `FileChooserParams.parseResult`：它只保证认得 `createIntent()` 的产物，
+     * 对我们自己发的 OPEN_DOCUMENT / Photo Picker 结果槽位没有承诺。
+     * 实测 Redmi（Android 16）上出现过 `code=-1` 但 `parseResult` 返回 null——
+     * 页面上就是「选完图什么都没发生」。这里按槽位逐个取：
+     * ClipData（多选）→ data（单选），并且只收 `content://`。
+     */
+    private Uri[] extractUris(int resultCode, Intent data) {
+        boolean hasData = data != null;
+        int clipCount = 0;
+        Uri single = hasData ? data.getData() : null;
+        java.util.LinkedHashSet<Uri> uris = new java.util.LinkedHashSet<>();
+        if (hasData) {
+            android.content.ClipData clip = data.getClipData();
+            if (clip != null) {
+                clipCount = clip.getItemCount();
+                for (int i = 0; i < clipCount; i += 1) {
+                    addContentUri(uris, clip.getItemAt(i).getUri());
+                }
+            }
+            addContentUri(uris, single);
+        }
+        StringBuilder extras = new StringBuilder();
+        if (hasData && data.getExtras() != null) {
+            for (String key : data.getExtras().keySet()) {
+                if (extras.length() > 0) {
+                    extras.append(',');
+                }
+                extras.append(key);
+            }
+        }
+        appendLogLine(javaDate() + " INFO [chooser] result"
+                + " code=" + resultCode
+                + " hasData=" + hasData
+                + " clip=" + clipCount
+                + " single=" + (single != null)
+                + " extras=[" + extras + "]"
+                + " delivered=" + uris.size()
+                + " callback=" + (filePathCallback != null));
+        if (resultCode != RESULT_OK || uris.isEmpty()) {
+            if (resultCode == RESULT_OK) {
+                // 明确告诉 JS：系统回了成功但没给文件，用户需要重选
+                appendLogLine(javaDate() + " WARN [chooser] ok without uri, ask user to reselect");
+            }
+            return null;
+        }
+        return uris.toArray(new Uri[0]);
+    }
+
+    private static void addContentUri(java.util.Set<Uri> uris, Uri uri) {
+        if (uri != null && "content".equals(uri.getScheme())) {
+            uris.add(uri);
+        }
+    }
     private File cameraOutput;
     private PermissionRequest pendingAudioRequest;
     private static final int REQ_RECORD_AUDIO = 2001;
@@ -411,6 +477,37 @@ public class MainActivity extends Activity {
                             }
                         }
                     }
+                    // 相册请求（accept 全是 image/*）走系统 Photo Picker：HyperOS 上
+                    // ACTION_OPEN_DOCUMENT 选完可能回 RESULT_OK 但 data 里没有 URI
+                    // （实测 [chooser] result code=-1 uris=null），Photo Picker 的回传契约更稳。
+                    boolean imageOnly = true;
+                    for (String mime : mimes) {
+                        if (!mime.startsWith("image/")) {
+                            imageOnly = false;
+                            break;
+                        }
+                    }
+                    boolean multiple = params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE;
+                    if (imageOnly && !mimes.isEmpty()
+                            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            && !params.isCaptureEnabled()) {
+                        try {
+                            Intent picker = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                            picker.setType("image/*");
+                            if (multiple) {
+                                int limit = MediaStore.getPickImagesMaxLimit();
+                                picker.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX,
+                                        Math.min(PICK_IMAGES_MAX, limit));
+                            }
+                            appendLogLine(javaDate() + " INFO [chooser] ask picker"
+                                    + " multiple=" + multiple + " accept=" + java.util.Arrays.toString(accept));
+                            startActivityForResult(picker, REQ_PICK_IMAGES);
+                            return true;
+                        } catch (Exception pickerError) {
+                            // 没有 Photo Picker（旧系统/定制 ROM）→ 落到下面的 OPEN_DOCUMENT
+                            appendLogLine(javaDate() + " WARN [chooser] picker unavailable: " + pickerError);
+                        }
+                    }
                     if (mimes.isEmpty()) {
                         intent.setType("*/*");
                     } else if (mimes.size() == 1) {
@@ -420,17 +517,17 @@ public class MainActivity extends Activity {
                         intent.setType("*/*");
                         intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
                     }
-                    if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    if (multiple) {
                         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                     }
-                    appendLogLine(new java.util.Date().toInstant().toString() + " INFO [chooser] ask"
+                    appendLogLine(javaDate() + " INFO [chooser] ask"
                             + " accept=" + java.util.Arrays.toString(accept)
                             + " mimes=" + mimes
                             + " mode=" + params.getMode());
                     startActivityForResult(intent, REQ_FILE_CHOOSER);
                     return true;
                 } catch (Exception e) {
-                    appendLogLine(new java.util.Date().toInstant().toString() + " ERROR [chooser] launch failed: " + e);
+                    appendLogLine(javaDate() + " ERROR [chooser] launch failed: " + e);
                     filePathCallback = null;
                     return false;
                 }
@@ -733,15 +830,15 @@ public class MainActivity extends Activity {
             cameraOutput = null;
             return;
         }
-        if (requestCode == REQ_FILE_CHOOSER) {
-            Uri[] uris = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
-            appendLogLine(new java.util.Date().toInstant().toString() + " INFO [chooser] result"
-                    + " code=" + resultCode
-                    + " uris=" + (uris == null ? "null" : String.valueOf(uris.length)));
-            // 把读取权限持久化：导入几百 MB 的归档要跑好几分钟，中途 Activity 重建后
-            // content:// 的临时授权就没了，用户得重新选一次文件才能续传。
-            // 云盘/部分文件管理器不支持持久授权，失败也不影响本次导入。
+        if (requestCode == REQ_FILE_CHOOSER || requestCode == REQ_PICK_IMAGES) {
+            // 不用 `FileChooserParams.parseResult`：它配套的是 `createIntent()`，
+            // 而我们自己发的 OPEN_DOCUMENT / Photo Picker 结果槽位不一定被它认出来
+            // （实测 HyperOS 上 RESULT_OK 但 parseResult 返回 null → 页面收不到文件）。
+            Uri[] uris = extractUris(resultCode, data);
             if (uris != null) {
+                // 把读取权限持久化：导入几百 MB 的归档要跑好几分钟，中途 Activity 重建后
+                // content:// 的临时授权就没了，用户得重新选一次文件才能续传。
+                // Photo Picker / 云盘等不支持持久授权，失败不影响本次使用。
                 for (Uri uri : uris) {
                     try {
                         getContentResolver().takePersistableUriPermission(
@@ -751,9 +848,12 @@ public class MainActivity extends Activity {
                     }
                 }
             }
-            if (filePathCallback != null) {
-                filePathCallback.onReceiveValue(uris);
-                filePathCallback = null;
+            // 先从字段里取出并清空，再回调一次；取消与「选完却没有 URI」都传 null，
+            // 否则 WebView 侧的 input 会一直挂在 pending，下一次选择才会被唤醒。
+            ValueCallback<Uri[]> pending = filePathCallback;
+            filePathCallback = null;
+            if (pending != null) {
+                pending.onReceiveValue(uris);
             }
             return;
         }
