@@ -1,5 +1,12 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.2.14（图片格式兜底 + 暂停语义）
+
+- **老 WebView 图片格式不支持**：`images.ts` 新增 `loadDrawable()`——先 `createImageBitmap`，缺失或解码失败退回
+  `<img>` + object URL + canvas。之前没有 `createImageBitmap` 的机型直接原样上传，服务端回 `unsupported image`
+- **`pause_turn` / `stop_sequence`**：`parseEvent` 与 `StopReason` 补齐（原来收到 `pause_turn` 整条 `message_delta`
+  会被丢弃）；暂停按「未完成」结算，续写时把工具调用与结果原样带上，缺 `message_stop` 的兜底也同样处理
+- 注：稳定线没有上下文压缩，所以用量圆环仍只显示、不可点击
 ## 1.2.13（导出保留分支结构）
 
 ### 导入/导出保真（复审十五轮后收口）
