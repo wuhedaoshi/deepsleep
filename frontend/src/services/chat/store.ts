@@ -1451,8 +1451,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
-          // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
-          reply = settleReply(reply, 'done', Date.now())
+          // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop。
+          // `pause_turn` 下这仍然是「暂停」而不是完成，续写按钮要能出现。
+          reply = settleReply(
+            reply,
+            reply.stopReason === 'pause_turn' ? 'stopped' : 'done',
+            Date.now()
+          )
         } else if (error instanceof ApiError) {
           logError('chat', '请求失败', { kind: error.kind, status: error.status, summary: errorSummary(error) })
           reply = settleReply(reply, 'error', Date.now(), {
