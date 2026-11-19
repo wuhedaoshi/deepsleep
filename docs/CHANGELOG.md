@@ -1,5 +1,12 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.3.14 · 实验线（圆环点击压缩 + 图片兜底 + 暂停语义）
+
+- **用量圆环可点击触发压缩**：`ContextMeter` 由 `<span>` 改成 `<button>`，点击立刻 `compactNow`
+  （原来只有显示，点了没反应）；压缩中禁用，补 hover / focus-visible
+- **老 WebView 图片兜底**：`loadDrawable()` 先 `createImageBitmap`，缺失或失败退回 `<img>` + canvas
+- **`pause_turn` / `stop_sequence`**：收白名单；暂停结算为 `stopped`；续写把工具调用与结果原样带上
+  （纯工具块的暂停也能续）；报错状态仍不可续；缺 `message_stop` 的兜底同样按暂停处理
 ## 1.3.13 · 实验线（导入/导出保真收口；与稳定线 1.2.13 同补丁号）
 
 在稳定线 1.2.13 的全部内容之上，含上下文压缩。本轮补的是**导入/导出保真**（两边同源）：
