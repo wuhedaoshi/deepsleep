@@ -317,13 +317,13 @@ const probeHead = (head: Uint8Array): { width: number; height: number } | null =
 }
 
 /** 用 canvas 把任意可解码的图片画成 JPEG；没有 canvas 的环境返回 null */
-const drawToJpeg = async (blob: Blob): Promise<Blob | null> => {
+const drawToJpeg = async (blob: Blob, edge = MAX_EDGE): Promise<Blob | null> => {
   if (typeof document === 'undefined') {
     return null
   }
   const drawable = await loadDrawable(blob)
   try {
-    const scale = Math.min(1, MAX_EDGE / Math.max(drawable.width, drawable.height))
+    const scale = Math.min(1, edge / Math.max(drawable.width, drawable.height))
     const width = Math.max(1, Math.round(drawable.width * scale))
     const height = Math.max(1, Math.round(drawable.height * scale))
     const canvas = document.createElement('canvas')
@@ -396,3 +396,31 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
  * 也不要让整个会话发不出去。
  */
 export const isRiskyImageType = (mime: string): boolean => !SUPPORTED_IMAGE_TYPES.has(mime)
+/** 草稿缩略图的目标长边：够看清就行，别为了 64px 的格子解码整张大图 */
+const PREVIEW_EDGE = 256
+
+/**
+ * 草稿缩略图的 object URL。
+ *
+ * 直接用 `URL.createObjectURL(file)` 会让 `<img>` **按原尺寸解码**整张图——
+ * 一张 8192×8192 的照片光是画个缩略图就要 268 MP 的位图，绕过了上传前的像素闸。
+ * 所以先按文件头核尺寸：读不出（未知格式 / 超大）就不给预览，让上传那条路去报明确错误。
+ *
+ * 调用方负责在删除附件时 `URL.revokeObjectURL`。
+ */
+export const createPreviewUrl = async (blob: Blob): Promise<string | null> => {
+  const probed = await probeImageSize(blob)
+  if (probed === null || probed.width * probed.height > MAX_PIXELS) {
+    return null
+  }
+  if (Math.max(probed.width, probed.height) <= PREVIEW_EDGE) {
+    return URL.createObjectURL(blob)
+  }
+  try {
+    const thumbnail = await drawToJpeg(blob, PREVIEW_EDGE)
+    // 没有 canvas（Node / 极老 WebView）时退回原图 URL：尺寸已经过闸，浏览器解它不会失控
+    return URL.createObjectURL(thumbnail ?? blob)
+  } catch {
+    return URL.createObjectURL(blob)
+  }
+}

@@ -9,6 +9,7 @@ import {
   validateFiles,
   type UploadTask,
 } from '../attachments.js'
+import { createPreviewUrl } from '../images.js'
 import type { FileAttachment } from './types.js'
 
 export type DraftAttachment = {
@@ -76,12 +77,38 @@ export const addDraftFiles = (
       id: createId(),
       file,
       isImage: image,
-      previewUrl: image ? URL.createObjectURL(file) : null,
+      // 缩略图要等尺寸核完再生成：直接拿原文件做 URL 会让 <img> 按原尺寸解码整张图
+      previewUrl: null,
     }
   })
   updateDraft(sessionId, (draft) => ({ ...draft, attachments: [...draft.attachments, ...added] }))
-  added.forEach((attachment) => upload(attachment, apiKey))
+  added.forEach((attachment) => {
+    if (attachment.isImage) {
+      void attachPreview(sessionId, attachment.id, attachment.file)
+    }
+    upload(attachment, apiKey)
+  })
   return null
+}
+
+/** 异步补上缩略图：核不出尺寸（未知格式 / 超大）就不给预览，上传那条路会给出明确原因。 */
+const attachPreview = async (sessionId: string | null, id: string, file: File): Promise<void> => {
+  const url = await createPreviewUrl(file).catch(() => null)
+  if (url === null) {
+    return
+  }
+  // 期间可能已被删除或发送掉，只在附件还在草稿里时挂上，避免泄漏 object URL
+  const draft = getDraft(sessionId)
+  if (!draft.attachments.some((item) => item.id === id)) {
+    URL.revokeObjectURL(url)
+    return
+  }
+  updateDraft(sessionId, (current) => ({
+    ...current,
+    attachments: current.attachments.map((item) =>
+      item.id === id ? { ...item, previewUrl: url } : item
+    ),
+  }))
 }
 
 export const retryDraftAttachment = (
