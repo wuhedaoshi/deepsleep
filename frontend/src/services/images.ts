@@ -190,8 +190,10 @@ const probeJpegSize = async (
       at += cursor + 2
       continue
     }
-    if (cursor + 3 >= window.length) {
-      return null
+    if (cursor + 4 > window.length) {
+      // 段长被窗口截断：把 at 挪到标记处重读一个完整窗口，别当成「尺寸未知」
+      at += cursor
+      continue
     }
     const size = (window[cursor + 2] << 8) | window[cursor + 3]
     if (size < 2) {
@@ -224,7 +226,10 @@ const probeIsoBmff = (head: Uint8Array): { width: number; height: number } | nul
   if (!['avif', 'avis', 'heic', 'heix', 'mif1', 'msf1'].includes(brand)) {
     return null
   }
-  // 扫描 `ispe`：盒体是 version/flags(4) + width(4) + height(4)
+  // 扫描所有 `ispe`（盒体 = version/flags(4) + width(4) + height(4)），取**最大**的那个。
+  // 只取第一个会被缩略图的 ispe 骗过：主图 8192×8192 + 缩略图 128×128 时，
+  // 首个 ispe 往往是缩略图，于是超大主图混过闸门。
+  let largest: { width: number; height: number } | null = null
   for (let at = 0; at + 16 <= head.length; at += 1) {
     if (head[at] !== 0x69 || head[at + 1] !== 0x73 || head[at + 2] !== 0x70 || head[at + 3] !== 0x65) {
       continue
@@ -232,11 +237,14 @@ const probeIsoBmff = (head: Uint8Array): { width: number; height: number } | nul
     const view = new DataView(head.buffer, head.byteOffset + at, 16)
     const width = view.getUint32(8)
     const height = view.getUint32(12)
-    if (width > 0 && height > 0) {
-      return { width, height }
+    if (width === 0 || height === 0) {
+      continue
+    }
+    if (largest === null || width * height > largest.width * largest.height) {
+      largest = { width, height }
     }
   }
-  return null
+  return largest
 }
 
 /**
