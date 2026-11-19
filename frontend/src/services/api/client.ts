@@ -147,6 +147,11 @@ export const uploadFile = async (
   }, UPLOAD_TIMEOUT_MS)
   const forwardAbort = () => controller.abort()
   signal?.addEventListener('abort', forwardAbort, { once: true })
+  // 注册监听前外部信号可能已经中止（例如用户在图片归一化期间取消）：
+  // 那时不会再收到 abort 事件，必须立刻自查，否则仍会把 POST 发出去。
+  if (signal?.aborted) {
+    controller.abort()
+  }
   try {
     const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
       method: 'POST',
