@@ -7,6 +7,7 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
+import { createId } from '../../utils/id.js'
 import { logError, logInfo } from '../../services/log.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
@@ -80,8 +81,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }, [t])
 
 const acceptFiles = (files: File[]) => {
-    // 这条日志是「选完图什么都没发生」的第一现场：没有它只能猜是选择器还是上传
+    // 这条日志是「选完图什么都没发生」的第一现场：没有它只能猜是选择器还是上传。
+    // 每次选择生成一个诊断 ID，把「原生结果 → 草稿写入 → 上传」串成一条链。
+    const diag = createId()
     logInfo('upload', '收到选择结果', {
+      diag,
       count: files.length,
       names: files.slice(0, 5).map((file) => file.name),
       types: files.slice(0, 5).map((file) => file.type),
@@ -96,7 +100,7 @@ const acceptFiles = (files: File[]) => {
       })
       return
     }
-    const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
+    const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '', diag)
     if (error) {
       logError('upload', '附件未被接受', { key: error.key, params: error.params })
       showToast(error)

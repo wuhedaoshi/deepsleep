@@ -4,7 +4,7 @@ import { ErrorBoundary } from './app/ErrorBoundary.js'
 import { RecoveryScreen, shouldShowRecovery } from './app/RecoveryScreen.js'
 import { setupTheme } from './app/theme.js'
 import { ensureKatex } from './services/markdown/katex.js'
-import { installLogHandlers, logInfo, logSettingsPresence, markBootStart } from './services/log.js'
+import { installLogHandlers, logEnvironmentOnce, logInfo, logSettingsPresence, markBootStart } from './services/log.js'
 import './app/theme.css'
 import './app/global.css'
 
@@ -20,6 +20,7 @@ if (shouldShowRecovery()) {
   root.render(<RecoveryScreen />)
 } else {
   logInfo('boot', 'frontend 启动')
+  logEnvironmentOnce()
   logSettingsPresence('启动时')
   ensureKatex()
   setupTheme()

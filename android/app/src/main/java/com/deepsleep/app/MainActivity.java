@@ -445,6 +445,40 @@ public class MainActivity extends Activity {
                 return true;
             }
 
+            /**
+             * 运行环境快照，供 JS 在启动时写进日志。
+             *
+             * 「同一张图、同一版本，一台设备正常、另一台失败」这类故障只能靠它判：
+             * WebView 版本决定有没有 createImageBitmap / Blob.arrayBuffer，
+             * SDK 级别决定能否用 ImageDecoder。
+             */
+            @JavascriptInterface
+            public String getEnvironment() {
+                org.json.JSONObject json = new org.json.JSONObject();
+                try {
+                    json.put("sdkInt", android.os.Build.VERSION.SDK_INT);
+                    json.put("release", android.os.Build.VERSION.RELEASE);
+                    json.put("model", android.os.Build.MODEL);
+                    json.put("brand", android.os.Build.BRAND);
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        android.content.pm.PackageInfo webViewInfo =
+                                android.webkit.WebView.getCurrentWebViewPackage();
+                        if (webViewInfo != null) {
+                            json.put("webviewPackage", webViewInfo.packageName);
+                            json.put("webviewVersion", webViewInfo.versionName);
+                        }
+                    }
+                    android.content.pm.PackageInfo self =
+                            getPackageManager().getPackageInfo(getPackageName(), 0);
+                    json.put("versionCode", self.getLongVersionCode());
+                    json.put("versionName", self.versionName);
+                    json.put("rendererRebuilds", rendererRebuilds);
+                } catch (Exception ignored) {
+                    // 拿不到就不写：日志缺字段不影响主流程
+                }
+                return json.toString();
+            }
+
             @JavascriptInterface
             public void takePhoto() {
                 runOnUiThread(new Runnable() {

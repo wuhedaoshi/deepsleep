@@ -362,3 +362,41 @@ const summarizeConsoleArg = (value: unknown): string => {
   }
   return typeof value
 }
+/**
+ * 启动时一次性记录**运行环境与能力**。
+ *
+ * 为什么值得开机就记：这类故障（同一张图、同一版本，一台设备正常、另一台失败）
+ * 的判据全在环境里——WebView 版本决定有没有 `createImageBitmap` / `Blob.arrayBuffer`，
+ * 渲染进程被杀时日志会断在半截。等到出问题再问用户要这些值，代价太高。
+ */
+export const logEnvironmentOnce = () => {
+  const bridge = (window as {
+    __deepsleepNative?: { getEnvironment?: () => string }
+  }).__deepsleepNative
+  let native: Record<string, unknown> | null = null
+  if (typeof bridge?.getEnvironment === 'function') {
+    try {
+      native = JSON.parse(bridge.getEnvironment()) as Record<string, unknown>
+    } catch {
+      native = null
+    }
+  }
+  const chromium = /Chrome\/(\d+)/.exec(navigator.userAgent)?.[1] ?? null
+  let toBlob = false
+  try {
+    toBlob = typeof document.createElement('canvas').toBlob === 'function'
+  } catch {
+    toBlob = false
+  }
+  logInfo('env', '运行环境', {
+    ...(native ?? {}),
+    chromium,
+    ua: navigator.userAgent.slice(0, 160),
+    createImageBitmap: typeof createImageBitmap === 'function',
+    blobArrayBuffer: typeof Blob.prototype.arrayBuffer === 'function',
+    fileReader: typeof FileReader === 'function',
+    canvasToBlob: toBlob,
+    dpr: window.devicePixelRatio,
+    cores: navigator.hardwareConcurrency ?? null,
+  })
+}
