@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { createId } from '../../utils/id.js'
 import {
-  MAX_SIZE_MB,
   cancelUpload,
+  describeFileRejection,
   isImage,
   partitionFiles,
   resolveMimeType,
@@ -81,10 +81,7 @@ export const addDraftFiles = (
     })
   }
   if (accepted.length === 0) {
-    const first = rejected[0]
-    return first.reason === 'format'
-      ? { key: 'uploadUnsupportedFormat' }
-      : { key: 'uploadMaxMBSize', params: { size: first.limitMB ?? MAX_SIZE_MB } }
+    return describeFileRejection(rejected[0])
   }
   const added = accepted.map((file): DraftAttachment => {
     const image = isImage(resolveMimeType(file))
@@ -111,13 +108,7 @@ export const addDraftFiles = (
     upload(attachment, apiKey)
   })
   // 部分被拒时也要说清楚：返回第一条原因，调用方会以 toast 显示
-  const firstRejected = rejected[0]
-  if (firstRejected !== undefined) {
-    return firstRejected.reason === 'format'
-      ? { key: 'uploadUnsupportedFormat' }
-      : { key: 'uploadMaxMBSize', params: { size: firstRejected.limitMB ?? MAX_SIZE_MB } }
-  }
-  return null
+  return rejected.length > 0 ? describeFileRejection(rejected[0]) : null
 }
 
 /** 异步补上缩略图：核不出尺寸（未知格式 / 超大）就不给预览，上传那条路会给出明确原因。 */
