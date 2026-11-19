@@ -184,7 +184,14 @@ export type CreateMessageRequest = {
 
 // ---------- 响应：流式事件 ----------
 
-export type StopReason = 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal'
+/**
+ * 服务端可能返回的结束原因。
+ *
+ * `refusal` / `pause_turn` 来自 Anthropic Messages API，DeepSeek 兼容端点会**原样透传**；
+ * `stop_sequence` 同理。少一个就会让整条 message_delta 被当成非法事件丢掉，
+ * 表现为「回复停在半截 / 报协议错误」。语义上 pause_turn 就是暂停（之后可继续），按 stop 处理。
+ */
+export type StopReason = 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal' | 'pause_turn' | 'stop_sequence'
 
 export type StopDetails = { type: 'refusal'; category: null; explanation: null }
 

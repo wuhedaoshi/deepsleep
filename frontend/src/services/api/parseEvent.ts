@@ -246,7 +246,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
     case 'message_delta':
       if (
         !isRecord(value.delta) ||
-        !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
+        !['end_turn', 'max_tokens', 'tool_use', 'refusal', 'pause_turn', 'stop_sequence'].includes(
           value.delta.stop_reason as string
         )
       ) {

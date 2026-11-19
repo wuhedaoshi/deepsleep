@@ -1,5 +1,5 @@
 import { useTranslate } from '../../i18n/index.js'
-import { useChatStore } from '../../services/chat/store.js'
+import { compactNow, useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
 import { DEFAULT_MODEL, evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
 import { getContextRounds } from '../../services/chat/reply.js'
@@ -30,6 +30,10 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   const session = useChatStore((state) =>
     sessionId === null ? undefined : state.sessionCache[sessionId]
   )
+  // 压缩中禁用，避免连点重复触发（store 内部也有互斥，这里只是别让按钮看起来还能按）
+  const busy = useChatStore((state) =>
+    sessionId === null ? false : state.compacting[sessionId] === true
+  )
   if (!session) {
     return null
   }
@@ -42,13 +46,28 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   }
 
   const percent = Math.min(100, (used / window) * 100)
+  // 预算没超也允许点：手动压缩就是为了「不必等到撑满再整理」
+  const onCompact = () => {
+    if (sessionId === null || busy) {
+      return
+    }
+    void compactNow(sessionId)
+  }
   return (
     <Tooltip content={t('contextUsageTooltip', {
       pressure: used.toLocaleString(),
       threshold: evaluation.threshold.toLocaleString(),
       source: evaluation.source === 'usage' ? 'usage' : t('contextSourceEstimate'),
     })}>
-      <span className={styles.meter} aria-label={t('contextUsage')} data-percent={percent.toFixed(1)}>
+      <button
+        type="button"
+        className={styles.meter}
+        aria-label={t('compactNow')}
+        title={t('compactNowHint')}
+        data-percent={percent.toFixed(1)}
+        disabled={busy}
+        onClick={onCompact}
+      >
         <svg className={styles.ring} viewBox="0 0 16 16" aria-hidden="true">
           <circle className={styles.track} cx="8" cy="8" r="6" />
           <circle
@@ -62,7 +81,7 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
         <span className={styles.text}>
           {formatTokens(used)} / {formatTokens(window)}
         </span>
-      </span>
+      </button>
     </Tooltip>
   )
 }
