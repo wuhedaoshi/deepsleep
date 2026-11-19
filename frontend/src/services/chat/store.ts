@@ -657,6 +657,10 @@ const showCompactOutcome = (outcome: ManualCompactionOutcome) => {
  * （输入框 `/compact`、点用量圆环）都必须走这里，别各写一遍。
  */
 export const compactWithFeedback = (sessionId: string): void => {
+  // 压缩进行中重复触发（连点圆环 / 又发一次 /compact）：不启动第二次，也不弹「失败」提示
+  if (get().compacting[sessionId] === true) {
+    return
+  }
   void compactNow(sessionId).then((outcome) => {
     showCompactOutcome(outcome)
   })
