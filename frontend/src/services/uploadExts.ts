@@ -1,4 +1,13 @@
 /**
+ * 允许上传的图片扩展名。
+ *
+ * **必须与 `images.ts` 的文件头探测能力一致**：清单里有、探测不了的格式会变成
+ * 「选了图却没反应」——历史上 avif/tiff/ico/svg 就是这样混进来的。
+ * 能探测（PNG/JPEG/GIF/WebP/BMP，APNG 走 PNG 头）才允许出现在这里。
+ */
+export const IMAGE_FILE_EXTS: string[] = ['png', 'apng', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'bmp']
+
+/**
  * 允许上传的文件扩展名清单；不含 heic / heif。
  */
 export const ACCEPT_FILE_EXTS: string[] = [
@@ -17,20 +26,10 @@ export const ACCEPT_FILE_EXTS: string[] = [
   'png',
   'jpg',
   'jpeg',
-  'svg',
-  'svgz',
   'bmp',
   'gif',
   'webp',
-  'ico',
-  'xbm',
-  'dib',
-  'pjp',
-  'tif',
-  'pjpeg',
-  'avif',
   'apng',
-  'tiff',
   'jfif',
   'txt',
   'md',

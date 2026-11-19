@@ -10,6 +10,8 @@
  * （省流量也省视觉 token）。解码失败时抛 ImageConvertError，由调用方决定怎么降级。
  */
 
+import { logInfo } from './log.js'
+
 /** 服务端明确支持的两种图片格式 */
 const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png'])
 
@@ -29,10 +31,16 @@ const MAX_PIXELS = 40_000_000
 /** JPEG 质量：0.9 在截图上肉眼无损 */
 const JPEG_QUALITY = 0.9
 
+/** 图片处理失败的原因码：上层据此给用户看具体原因，而不是笼统的「上传失败」 */
+export type ImageErrorReason = 'tooLarge' | 'unsupported' | 'undecodable' | 'convertFailed'
+
 export class ImageConvertError extends Error {
-  constructor(message: string) {
+  readonly reason: ImageErrorReason
+
+  constructor(reason: ImageErrorReason, message: string) {
     super(message)
     this.name = 'ImageConvertError'
+    this.reason = reason
   }
 }
 
@@ -71,27 +79,38 @@ const loadViaImageElement = (blob: Blob): Promise<Drawable> =>
     }
     image.onerror = () => {
       cleanup()
-      reject(new ImageConvertError('图片无法解码'))
+      reject(new ImageConvertError('undecodable', '图片无法解码'))
     }
     image.src = url
   })
 
 const loadDrawable = async (blob: Blob): Promise<Drawable> => {
   if (typeof createImageBitmap === 'function') {
+    const startedAt = Date.now()
     try {
       const bitmap = await createImageBitmap(blob)
+      logInfo('upload', '解码路径: createImageBitmap', {
+        width: bitmap.width,
+        height: bitmap.height,
+        ms: Date.now() - startedAt,
+      })
       return {
         source: bitmap,
         width: bitmap.width,
         height: bitmap.height,
         close: () => bitmap.close(),
       }
-    } catch {
+    } catch (error) {
       // 解码器不认这个格式（老 WebView 常见）：退回 <img>
+      logInfo('upload', '解码路径: createImageBitmap 失败，退回 <img>', {
+        mime: blob.type,
+        bytes: blob.size,
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
   }
   if (typeof Image === 'undefined') {
-    throw new ImageConvertError('图片无法解码')
+    throw new ImageConvertError('undecodable', '图片无法解码')
   }
   return loadViaImageElement(blob)
 }
@@ -109,12 +128,12 @@ const readHeadBytes = (blob: Blob, bytes: number): Promise<Uint8Array> => {
   }
   return new Promise((resolve, reject) => {
     if (typeof FileReader !== 'function') {
-      reject(new ImageConvertError('图片无法解码'))
+      reject(new ImageConvertError('undecodable', '图片无法解码'))
       return
     }
     const reader = new FileReader()
     reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer))
-    reader.onerror = () => reject(new ImageConvertError('图片无法解码'))
+    reader.onerror = () => reject(new ImageConvertError('undecodable', '图片无法解码'))
     reader.readAsArrayBuffer(part)
   })
 }
@@ -341,7 +360,7 @@ const drawToJpeg = async (blob: Blob, edge = MAX_EDGE): Promise<Blob | null> => 
       canvas.toBlob((result) => resolve(result), 'image/jpeg', JPEG_QUALITY)
     })
     if (output === null) {
-      throw new ImageConvertError('图片转换失败')
+      throw new ImageConvertError('convertFailed', '图片转换失败')
     }
     return output
   } finally {
@@ -370,7 +389,7 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
     probed = await probeJpegSize(blob)
   }
   if (probed !== null && probed.width * probed.height > MAX_PIXELS) {
-    throw new ImageConvertError('图片尺寸过大')
+    throw new ImageConvertError('tooLarge', '图片尺寸过大')
   }
   const supported = SUPPORTED_IMAGE_TYPES.has(blob.type)
   const fits = probed !== null && Math.max(probed.width, probed.height) <= MAX_EDGE
@@ -380,7 +399,10 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
   // 仍读不出像素数：容器结构不可信（段数过多、长度字段异常、或不认识的格式）。
   // 宁可明确拒绝，也不把未知大小的位图交给解码器——那是一台老设备最容易被 OOM 杀掉的地方。
   if (probed === null) {
-    throw new ImageConvertError(isJpeg ? '图片尺寸过大' : '图片格式无法识别')
+    throw new ImageConvertError(
+      isJpeg ? 'tooLarge' : 'unsupported',
+      isJpeg ? '图片尺寸过大' : '图片格式无法识别'
+    )
   }
   const jpeg = await drawToJpeg(blob)
   if (jpeg === null) {
@@ -462,7 +484,23 @@ const PREVIEW_EDGE = 256
  * 调用方负责在删除附件时 `URL.revokeObjectURL`。
  */
 export const createPreviewUrl = async (blob: Blob, name = 'preview'): Promise<string | null> => {
+  const startedAt = Date.now()
   const probed = await probeImageSize(blob)
+  const branch = probed === null
+    ? 'unknown-size'
+    : probed.width * probed.height > MAX_PIXELS
+      ? 'too-large'
+      : Math.max(probed.width, probed.height) <= MAX_EDGE && SUPPORTED_IMAGE_TYPES.has(blob.type)
+        ? 'passthrough'
+        : 'convert'
+  logInfo('upload', '图片预处理', {
+    name,
+    mime: blob.type,
+    bytes: blob.size,
+    probed: probed === null ? 'unknown' : `${probed.width}x${probed.height}`,
+    branch,
+    elapsedMs: Date.now() - startedAt,
+  })
   // 读不出尺寸或超出像素上限：不给预览，上传那条路会给出明确原因
   if (probed === null || probed.width * probed.height > MAX_PIXELS) {
     return null
