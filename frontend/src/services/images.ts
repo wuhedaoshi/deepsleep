@@ -448,8 +448,9 @@ export const toSupportedImage = async (blob: Blob, name: string): Promise<Normal
   }
   const jpeg = await drawToJpeg(blob)
   if (jpeg === null) {
-    // 没有 canvas（Node）：原样返回，让服务端去判
-    return { blob, name, converted: false }
+    // 需要转换却没有 2D canvas（极老 WebView）：原样上传等于把 WebP/GIF/BMP 冒充 JPEG
+    // 交给服务端，必然被拒。这里直接给出可读的失败原因，别再让它进上传队列。
+    throw new ImageConvertError('convertFailed', '图片转换不可用')
   }
   return { blob: jpeg, name: withJpegName(name), converted: true }
 }
