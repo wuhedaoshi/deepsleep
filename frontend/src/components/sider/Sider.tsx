@@ -31,15 +31,35 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const activeId = useChatStore((state) => state.activeId)
   const [now, setNow] = useState(Date.now)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [searchOrigin, setSearchOrigin] = useState<DOMRect>()
+  const [searchPreparing, setSearchPreparing] = useState(false)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const searchFocus = useSiderSearch((state) => state.focus)
 
   useEffect(() => {
     if (searchFocus > 0) {
+      setSearchOrigin(undefined)
       setSearchOpen(true)
     }
   }, [searchFocus])
+  useEffect(() => {
+    if (!searchPreparing) {
+      return
+    }
+    let nextFrame = 0
+    const frame = requestAnimationFrame(() => {
+      // 先提交搜索框原位，再开始展开，避免从默认坐标起跳。
+      nextFrame = requestAnimationFrame(() => {
+        setSearchPreparing(false)
+        setSearchOpen(true)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      cancelAnimationFrame(nextFrame)
+    }
+  }, [searchPreparing])
   const groups = useMemo(() => groupSessions(sessions, now, t), [sessions, now, t])
 
 
@@ -108,9 +128,9 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
       <button
         type="button"
         className={styles.searchRow}
-        onClick={() => {
-          closeMobileSider()
-          setSearchOpen(true)
+        onClick={(event) => {
+          setSearchOrigin(event.currentTarget.getBoundingClientRect())
+          setSearchPreparing(true)
         }}
         aria-label={t('searchConversations')}
       >
@@ -211,7 +231,17 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         </button>
       </div>
       )}
-      <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SearchOverlay
+        open={searchOpen}
+        origin={searchOrigin}
+        preparing={searchPreparing}
+        onClose={(selected) => {
+          setSearchOpen(false)
+          if (mobile && selected) {
+            closeMobileSider()
+          }
+        }}
+      />
       {deleting ? (
         <Modal
           title={t('deleteSessionModalContentTitle')}
