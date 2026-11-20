@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import {
   IconSearchOutline16,
@@ -33,16 +33,21 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchOrigin, setSearchOrigin] = useState<DOMRect>()
   const [searchPreparing, setSearchPreparing] = useState(false)
+  const [searchClosing, setSearchClosing] = useState(false)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const searchFocus = useSiderSearch((state) => state.focus)
+  const lastSearchFocus = useRef(searchFocus)
 
   useEffect(() => {
-    if (searchFocus > 0) {
+    if (mobile && lastSearchFocus.current !== searchFocus) {
+      setSearchPreparing(false)
+      setSearchClosing(false)
       setSearchOrigin(undefined)
       setSearchOpen(true)
     }
-  }, [searchFocus])
+    lastSearchFocus.current = searchFocus
+  }, [mobile, searchFocus])
   useEffect(() => {
     if (!searchPreparing) {
       return
@@ -128,6 +133,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
       <button
         type="button"
         className={styles.searchRow}
+        style={searchOrigin && (searchOpen || searchClosing) ? { visibility: 'hidden' } : undefined}
         onClick={(event) => {
           setSearchOrigin(event.currentTarget.getBoundingClientRect())
           setSearchPreparing(true)
@@ -235,7 +241,10 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         open={searchOpen}
         origin={searchOrigin}
         preparing={searchPreparing}
+        closing={searchClosing}
+        onClosed={() => setSearchClosing(false)}
         onClose={(selected) => {
+          setSearchClosing(!(mobile && selected))
           setSearchOpen(false)
           if (mobile && selected) {
             closeMobileSider()

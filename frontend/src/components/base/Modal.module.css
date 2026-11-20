@@ -7,6 +7,7 @@
   align-items: center;
   justify-content: center;
   background-color: rgba(0, 0, 0, var(--overlay-opacity));
+  animation: modal-enter 150ms ease-out;
   /* 不要 backdrop-filter：整屏模糊在部分 Android WebView（Mali GPU）上会整层渲染成纯白，
      表现就是「界面全白但 JS 一切正常」。2px 的模糊本来也看不出来，用底色补偿即可。 */
 
@@ -36,6 +37,7 @@
 
 .header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -66,4 +68,16 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
+}
+
+@keyframes modal-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay {
+    animation: none;
+  }
 }
