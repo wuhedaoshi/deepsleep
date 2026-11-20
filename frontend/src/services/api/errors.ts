@@ -117,3 +117,13 @@ export const getUploadErrorInfo = (error: unknown): UploadErrorInfo | null => {
   }
   return null
 }
+
+
+/** DeepSeek 扩展请求的单条限制，和总上下文溢出分开处理。 */
+export const getSingleMessageLimit = (error: unknown) => {
+  if (!(error instanceof ApiError) || error.status !== 400) {
+    return null
+  }
+  const match = /user input too long,\s*([\d,]+) tokens exceeds max ([\d,]+) tokens/i.exec(error.message)
+  return match ? { actual: match[1], limit: match[2] } : null
+}

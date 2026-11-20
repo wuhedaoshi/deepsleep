@@ -94,6 +94,40 @@
   height: 40px;
 }
 
+/* 顶栏不是搜索框，使用全屏淡入，不从侧栏的默认坐标借一个轮廓。 */
+.direct {
+  clip-path: none;
+  opacity: 0;
+  background-color: var(--surface-primary, #fff);
+  transition:
+    opacity 160ms ease,
+    visibility 0s 160ms;
+}
+
+.direct.visible {
+  opacity: 1;
+  transition-delay: 0s;
+}
+
+.direct .field {
+  top: var(--search-header-top);
+  left: 48px;
+  right: 10px;
+  height: 40px;
+  transition: none;
+}
+
+.direct .back,
+.direct .results {
+  opacity: 1;
+  transition: none;
+}
+
+/* 退场结束后移除覆盖层的绘制，原搜索框在同一帧恢复。 */
+.parked {
+  opacity: 0;
+}
+
 .preparing,
 .preparing .field {
   transition: none;
@@ -101,6 +135,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .overlay,
+  .direct,
   .field,
   .back,
   .results {

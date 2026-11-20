@@ -11,11 +11,15 @@ export const SearchOverlay = ({
   open,
   origin,
   preparing,
+  closing,
+  onClosed,
   onClose,
 }: {
   open: boolean
   origin?: DOMRect
   preparing: boolean
+  closing: boolean
+  onClosed: () => void
   onClose: (selected?: boolean) => void
 }) => {
   const originStyle = origin
@@ -26,11 +30,16 @@ export const SearchOverlay = ({
         '--search-height': `${origin.height}px`,
       } as CSSProperties)
     : undefined
+  const direct = !origin
   const t = useTranslate()
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const pendingFocus = useRef(false)
+  const onClosedRef = useRef(onClosed)
+  useEffect(() => {
+    onClosedRef.current = onClosed
+  }, [onClosed])
   const focusSearch = () => {
     if (pendingFocus.current) {
       pendingFocus.current = false
@@ -53,6 +62,15 @@ export const SearchOverlay = ({
       clearTimeout(fallback)
     }
   }, [open])
+
+  useEffect(() => {
+    if (!closing) {
+      return
+    }
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const timer = setTimeout(() => onClosedRef.current(), reducedMotion ? 0 : 340)
+    return () => clearTimeout(timer)
+  }, [closing])
 
   useEffect(() => {
     if (!open) {
@@ -90,13 +108,21 @@ export const SearchOverlay = ({
   // 挂到 body：抽屉本身带 transform，fixed 定位会被限制在抽屉里，只盖住半屏。
   return createPortal(
     <div
-      className={`${styles.overlay} ${open ? styles.visible : ''} ${preparing ? styles.preparing : ''}`}
+      className={`${styles.overlay} ${open ? styles.visible : ''} ${direct ? styles.direct : ''} ${preparing ? styles.preparing : ''} ${!open && !closing ? styles.parked : ''}`}
       style={originStyle}
       role="dialog"
       aria-hidden={!open}
       onTransitionEnd={(event) => {
-        if (open && event.target === event.currentTarget && event.propertyName === 'clip-path') {
+        if (
+          event.target !== event.currentTarget ||
+          event.propertyName !== (direct ? 'opacity' : 'clip-path')
+        ) {
+          return
+        }
+        if (open) {
           focusSearch()
+        } else if (closing) {
+          onClosed()
         }
       }}
     >

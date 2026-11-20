@@ -339,3 +339,9 @@
     }
   }
 }
+.lengthHint {
+  padding: 4px 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}

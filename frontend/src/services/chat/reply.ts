@@ -286,13 +286,14 @@ const toUserParam = ({ content, files }: UserMessage): MessageParam => {
 const toAssistantParam = (
   { blocks }: AssistantMessage,
   prefix = false,
-  thinking = false
+  thinking = false,
+  extended = true
 ): Extract<MessageParam, { role: 'assistant' }> => {
   const content: AssistantBlockParam[] = []
   // 成功阅读的网页靠签名恢复正文；缺少有效签名时，调用与结果都不回传。
   const unsignedReadLinks = new Set(
     blocks.flatMap((block) =>
-      block.type === 'web_fetch_tool_result' &&
+      extended && block.type === 'web_fetch_tool_result' &&
       block.kind === 'read_link' &&
       block.content.type === 'web_fetch_result' &&
       !block.signature?.trim()
@@ -326,7 +327,7 @@ const toAssistantParam = (
       const { type, thinking, signature } = block
       content.push({ type, thinking, signature: signature ?? '' })
     } else if (
-      block.type === 'server_tool_use' &&
+      extended && block.type === 'server_tool_use' &&
       block.kind === 'read_link' &&
       !unsignedReadLinks.has(block.id)
     ) {
@@ -382,7 +383,8 @@ export const toRequestMessages = (
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
   latestReminder?: string,
-  compaction?: SessionCompaction
+  compaction?: SessionCompaction,
+  extended = true
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   const rounds = getContextRounds(history)
@@ -397,7 +399,7 @@ export const toRequestMessages = (
   let previousReminder: string | undefined
   const appendReminder = (reminder: string | undefined) => {
     // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
-    if (reminder && reminder !== previousReminder) {
+    if (extended && reminder && reminder !== previousReminder) {
       messages.push({ role: 'latest_reminder', content: reminder })
       previousReminder = reminder
     }
@@ -408,12 +410,12 @@ export const toRequestMessages = (
       continue
     }
     appendReminder(reply.latestReminder)
-    messages.push(toUserParam(user), toAssistantParam(reply))
+    messages.push(toUserParam(user), toAssistantParam(reply, false, false, extended))
   }
   appendReminder(latestReminder)
   messages.push(toUserParam(question))
   if (prefix?.prefix) {
-    const assistant = toAssistantParam(prefix, true, thinking)
+    const assistant = toAssistantParam(prefix, true, thinking, extended)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。
     if (
       assistant.content.some(

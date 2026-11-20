@@ -5,6 +5,10 @@
  */
 
 export type ChatModel = 'deepseek-flash' | 'deepseek-v4-pro'
+export type ThinkingEffort = 'low' | 'high' | 'max'
+export type SafetyLevel = 'low' | 'high'
+export type ApiMode = 'extended' | 'standard'
+export const DEFAULT_SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 
 // ---------- 响应：内容块 ----------
 
@@ -177,8 +181,9 @@ export type CreateMessageRequest = {
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
-  tools: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
-  safety_check: { level: 'high' }
+  tools?: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
+  output_config?: { effort: ThinkingEffort }
+  safety_check?: { level: SafetyLevel }
   title?: { enabled: boolean }
 }
 

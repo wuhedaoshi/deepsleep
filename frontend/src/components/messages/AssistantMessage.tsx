@@ -109,6 +109,20 @@ export const AssistantMessage = memo(function AssistantMessage({
                 </button>
               </>
             ) : null}
+            {notice.action === 'retryStandard' ? (
+              <>
+                {' '}
+                {t('retryStandardApiHint')}{' '}
+                <button
+                  type="button"
+                  className={styles.noticeAction}
+                  disabled={busy}
+                  onClick={() => regenerateReply(sessionId, message.id, 'standard')}
+                >
+                  {t('retryStandardApi')}
+                </button>
+              </>
+            ) : null}
             {notice.action === 'topUp' ? (
               <>
                 {' '}

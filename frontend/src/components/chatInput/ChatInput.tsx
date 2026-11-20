@@ -1,3 +1,4 @@
+import { estimateTextTokens } from '../../services/chat/compaction.js'
 import clsx from 'clsx'
 import { useState, memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import {
@@ -59,6 +60,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const isMobile = useIsMobile()
   const [attachOpen, setAttachOpen] = useState(false)
   const search = useSettings((state) => state.search)
+  const standard = useSettings((state) => state.apiMode === 'standard')
+  const nearSingleMessageLimit =
+    !standard && text.length > 28000 && estimateTextTokens(text) >= 28000
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -80,7 +84,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     return () => observer.disconnect()
   }, [t])
 
-const acceptFiles = (files: File[]) => {
+  const acceptFiles = (files: File[]) => {
     // 这条日志是「选完图什么都没发生」的第一现场：没有它只能猜是选择器还是上传。
     // 每次选择生成一个诊断 ID，把「原生结果 → 草稿写入 → 上传」串成一条链。
     const diag = createId()
@@ -208,6 +212,11 @@ const acceptFiles = (files: File[]) => {
       }}
     >
       <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
+      {nearSingleMessageLimit ? (
+        <div className={styles.lengthHint} role="status">
+          {t('extendedInputLengthHint')}
+        </div>
+      ) : null}
       <div className={styles.textareaWrapper}>
         <textarea
           ref={textareaRef}
@@ -279,12 +288,15 @@ const acceptFiles = (files: File[]) => {
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
           </Tooltip>
-          <Tooltip content={t('deactivatedSearchTooltip')}>
+          <Tooltip
+            content={t(standard ? 'standardModeSearchUnavailable' : 'deactivatedSearchTooltip')}
+          >
             <button
               type="button"
-              className={clsx(styles.toggle, search && styles.selected)}
+              className={clsx(styles.toggle, !standard && search && styles.selected)}
               aria-label={t('search')}
-              aria-pressed={search}
+              aria-pressed={!standard && search}
+              disabled={standard}
               onClick={() => setSearch(!search)}
             >
               <IconGlobeLanguageOutline14 />

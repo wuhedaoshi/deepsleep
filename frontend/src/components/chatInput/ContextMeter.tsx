@@ -1,7 +1,7 @@
 import { useTranslate } from '../../i18n/index.js'
 import { compactWithFeedback, useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
-import { DEFAULT_MODEL, evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
+import { evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
 import { getContextRounds } from '../../services/chat/reply.js'
 import { useSettings } from '../../services/settings.js'
 import { Tooltip } from '../base/Tooltip.js'
@@ -26,6 +26,7 @@ const formatTokens = (value: number): string => {
  */
 export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
+  const model = useSettings((state) => state.model)
   const override = useSettings((state) => state.contextWindowOverride)
   const session = useChatStore((state) =>
     sessionId === null ? undefined : state.sessionCache[sessionId]
@@ -38,7 +39,7 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
     return null
   }
   const rounds = getContextRounds(getVisibleMessages(session))
-  const window = resolveWindow(DEFAULT_MODEL, override)
+  const window = resolveWindow(model, override)
   const evaluation = evaluateCompaction(rounds, session.compaction, window)
   const used = evaluation.pressure
   if (used <= 0) {

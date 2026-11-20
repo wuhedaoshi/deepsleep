@@ -1,4 +1,6 @@
 import clsx from 'clsx'
+import { createId } from '../../utils/id.js'
+import type { ThinkingEffort } from '../../services/api/types.js'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   IconDarkOutline16,
@@ -29,6 +31,12 @@ import {
   setEnterKey,
   parseContextWindowInput,
   setContextWindowOverride,
+  setModel,
+  setApiMode,
+  setThinking,
+  setThinkingEffort,
+  setSafetyLevel,
+  setPromptPreferences,
   setTtsVoice,
   useSettings,
   type ThemePreference,
@@ -42,7 +50,7 @@ import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { LogPanel } from './LogPanel.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
-import { COMPACTION_POLICY, DEFAULT_MODEL, resolveWindow } from '../../services/chat/compaction.js'
+import { COMPACTION_POLICY, resolveWindow } from '../../services/chat/compaction.js'
 
 /**
  * 设置弹窗：分「通用设置」（主题、语言、朗读音色、位置）与「数据管理」（API Key、导入、导出、删除）。
@@ -113,7 +121,7 @@ const SettingsContent = () => {
               <LocationSetting />
             </>
           ) : section === 'experimental' ? (
-            <ContextWindowSetting />
+            <ExperimentalSettings />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />
@@ -137,7 +145,8 @@ const SettingsContent = () => {
                     {t('delete')}
                   </Button>
                 }
-              />              <SettingCell
+              />{' '}
+              <SettingCell
                 label={t('runLog')}
                 status={{ key: 'runLogHint' }}
                 action={
@@ -238,43 +247,250 @@ const useHistoryDelete = () => {
   }
 }
 
+const ExperimentalSettings = () => {
+  const t = useTranslate()
+  const apiMode = useSettings((state) => state.apiMode)
+  const model = useSettings((state) => state.model)
+  const thinking = useSettings((state) => state.thinking)
+  const effort = useSettings((state) => state.thinkingEffort)
+  const safety = useSettings((state) => state.safetyLevel)
+  return (
+    <>
+      <SettingCell
+        label={t('settingsApiMode')}
+        description={t('settingsApiModeHint')}
+        status={null}
+        action={
+          <Select
+            value={apiMode}
+            ariaLabel={t('settingsApiMode')}
+            onChange={setApiMode}
+            options={[
+              { value: 'extended', label: t('settingsApiExtended') },
+              { value: 'standard', label: t('settingsApiStandard') },
+            ]}
+          />
+        }
+      />
+      <SettingCell
+        label={t('settingsModel')}
+        description={t('settingsModelHint')}
+        status={null}
+        action={
+          <Select
+            value={model}
+            ariaLabel={t('settingsModel')}
+            onChange={setModel}
+            options={[
+              { value: 'deepseek-flash', label: 'DeepSeek Flash' },
+              { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+            ]}
+          />
+        }
+      />
+      <SettingCell
+        label={t('settingsThinkingEffort')}
+        status={null}
+        action={
+          <Select<ThinkingEffort | 'off'>
+            value={thinking ? effort : 'off'}
+            ariaLabel={t('settingsThinkingEffort')}
+            onChange={(value) => {
+              if (value !== 'off') {
+                setThinkingEffort(value)
+              }
+              setThinking(value !== 'off')
+            }}
+            options={[
+              { value: 'off', label: t('settingsThinkingOff') },
+              { value: 'low', label: t('settingsThinkingLow') },
+              { value: 'high', label: t('settingsThinkingHigh') },
+              { value: 'max', label: t('settingsThinkingMax') },
+            ]}
+          />
+        }
+      />
+      <ContextWindowSetting />
+      <SettingCell
+        label={t('settingsSafetyLevel')}
+        status={null}
+        action={
+          <Select
+            value={safety}
+            disabled={apiMode === 'standard'}
+            ariaLabel={t('settingsSafetyLevel')}
+            onChange={setSafetyLevel}
+            options={[
+              { value: 'low', label: t('settingsSafetyStandard') },
+              { value: 'high', label: t('settingsSafetyHigh') },
+            ]}
+          />
+        }
+      />
+      <PromptPresetSetting />
+    </>
+  )
+}
+
+const WINDOW_CHOICES = ['300000', '600000', '1000000', '1400000']
+
 const ContextWindowSetting = () => {
   const t = useTranslate()
+  const model = useSettings((state) => state.model)
   const override = useSettings((state) => state.contextWindowOverride)
+  const [choice, setChoice] = useState(() => {
+    if (override === null) {
+      return 'auto'
+    }
+    return WINDOW_CHOICES.includes(String(override)) ? String(override) : 'custom'
+  })
   const [value, setValue] = useState(override === null ? '' : String(override))
   const minimum = COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
-    const parsed = parseContextWindowInput(value)
-    const invalid = value.trim() !== '' && (parsed === null || parsed <= minimum)
+  const window = resolveWindow(model, null)
+  const parsed = parseContextWindowInput(value)
+  const invalid =
+    choice === 'custom' && value.trim() !== '' && (parsed === null || parsed <= minimum)
   return (
     <SettingCell
       label={t('settingsContextWindow')}
-      description={t('settingsContextWindowHint', { window: resolveWindow(DEFAULT_MODEL, null), minimum })}
+      description={t('settingsContextWindowHint', { window, minimum })}
       status={invalid ? { key: 'settingsContextWindowInvalid', params: { minimum } } : null}
       className={styles.contextWindowCell}
       action={
-        <input
-          className={styles.contextWindowInput}
-            type="text"
-          aria-label={t('settingsContextWindow')}
-          aria-invalid={invalid}
-          placeholder={String(resolveWindow(DEFAULT_MODEL, null))}
-          value={value}
-          onChange={(event) => {
-            const next = event.currentTarget.value
-            setValue(next)
-            const trimmed = next.trim()
-            const number = parseContextWindowInput(next)
-            // 只有「明确清空」才恢复默认；非法输入保留原设置，否则打错一个字就把窗口打回 1M，
-            // 会让小窗口模型的压缩推迟到超窗。
-            if (trimmed === '') {
-              setContextWindowOverride(null)
-              return
-            }
-            if (number !== null && number > minimum) {
-              setContextWindowOverride(number)
-            }
-          }}
-        />
+        <div className={styles.experimentalControls}>
+          <Select
+            value={choice}
+            ariaLabel={t('settingsContextWindow')}
+            options={[
+              { value: 'auto', label: t('settingsWindowAuto') },
+              ...WINDOW_CHOICES.map((tokens) => ({
+                value: tokens,
+                label: Number(tokens).toLocaleString(),
+              })),
+              { value: 'custom', label: t('settingsWindowCustom') },
+            ]}
+            onChange={(next) => {
+              setChoice(next)
+              if (next !== 'custom') {
+                setContextWindowOverride(next === 'auto' ? null : Number(next))
+                setValue(next === 'auto' ? '' : next)
+              }
+            }}
+          />
+          {choice === 'custom' ? (
+            <input
+              className={styles.contextWindowInput}
+              type="text"
+              aria-label={t('settingsWindowCustom')}
+              aria-invalid={invalid}
+              placeholder={String(window)}
+              value={value}
+              onChange={(event) => {
+                const next = event.currentTarget.value
+                setValue(next)
+                const number = parseContextWindowInput(next)
+                if (next.trim() === '') {
+                  setContextWindowOverride(null)
+                } else if (number !== null && number > minimum) {
+                  setContextWindowOverride(number)
+                }
+              }}
+            />
+          ) : null}
+        </div>
+      }
+    />
+  )
+}
+
+const PromptPresetSetting = () => {
+  const t = useTranslate()
+  const presets = useSettings((state) => state.promptPresets)
+  const activeId = useSettings((state) => state.activePromptId)
+  const [draft, setDraft] = useState(() => presets.find((preset) => preset.id === activeId))
+  const canSave = Boolean(draft?.name.trim() && draft.text.trim())
+  return (
+    <SettingCell
+      label={t('settingsPromptPreset')}
+      description={t('settingsPromptHint')}
+      status={null}
+      className={styles.contextWindowCell}
+      action={
+        <div className={styles.experimentalControls}>
+          <div className={styles.experimentalActions}>
+            <Select
+              value={activeId ?? ''}
+              ariaLabel={t('settingsPromptPreset')}
+              options={[
+                { value: '', label: t('settingsPromptDefault') },
+                ...presets.map(({ id, name }) => ({ value: id, label: name })),
+              ]}
+              onChange={(id) => {
+                setPromptPreferences(presets, id || null)
+                setDraft(presets.find((preset) => preset.id === id))
+              }}
+            />
+            <Button
+              variant="outlined"
+              size="m"
+              onClick={() => setDraft({ id: createId(), name: '', text: '' })}
+            >
+              {t('settingsPromptNew')}
+            </Button>
+          </div>
+          {draft ? (
+            <>
+              <input
+                className={styles.contextWindowInput}
+                aria-label={t('settingsPromptName')}
+                placeholder={t('settingsPromptName')}
+                maxLength={80}
+                value={draft.name}
+                onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
+              />
+              <textarea
+                className={styles.contextWindowInput}
+                rows={5}
+                aria-label={t('settingsPromptText')}
+                placeholder={t('settingsPromptText')}
+                value={draft.text}
+                onChange={(event) => setDraft({ ...draft, text: event.currentTarget.value })}
+              />
+              <div className={styles.experimentalActions}>
+                <Button
+                  variant="outlined"
+                  size="m"
+                  disabled={!canSave}
+                  onClick={() => {
+                    const saved = { ...draft, name: draft.name.trim(), text: draft.text.trim() }
+                    const next = presets.some((preset) => preset.id === saved.id)
+                      ? presets.map((preset) => (preset.id === saved.id ? saved : preset))
+                      : [...presets, saved]
+                    setPromptPreferences(next, saved.id)
+                    setDraft(saved)
+                  }}
+                >
+                  {t('settingsPromptSave')}
+                </Button>
+                {presets.some((preset) => preset.id === draft.id) ? (
+                  <Button
+                    variant="dangerOutlined"
+                    size="m"
+                    onClick={() => {
+                      setPromptPreferences(
+                        presets.filter((preset) => preset.id !== draft.id),
+                        null
+                      )
+                      setDraft(undefined)
+                    }}
+                  >
+                    {t('delete')}
+                  </Button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </div>
       }
     />
   )
@@ -658,7 +874,10 @@ const BalanceSetting = () => {
   const t = useTranslate()
   const apiKey = useSettings((state) => state.apiKey)
   const [state, setState] = useState<
-    { kind: 'idle' } | { kind: 'loading' } | { kind: 'ok'; text: string; detail: string } | { kind: 'error'; text: string }
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'ok'; text: string; detail: string }
+    | { kind: 'error'; text: string }
   >({ kind: 'idle' })
 
   const load = useCallback(async () => {
@@ -695,7 +914,12 @@ const BalanceSetting = () => {
       }
       status={null}
       action={
-        <Button variant="outlined" size="m" className={styles.cellButton} onClick={() => void load()}>
+        <Button
+          variant="outlined"
+          size="m"
+          className={styles.cellButton}
+          onClick={() => void load()}
+        >
           {t('balanceRefresh')}
         </Button>
       }

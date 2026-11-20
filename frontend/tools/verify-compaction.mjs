@@ -91,6 +91,10 @@ globalThis.fetch = async (_url, init) => {
   const body = JSON.parse(init.body)
   const isSummary = JSON.stringify(body.messages.at(-1)).includes('压缩引擎')
   requests.push({ body, isSummary })
+  if (!isSummary && mockMode === 'per-message') {
+    mockMode = 'ok'
+    return new Response(JSON.stringify({ error: { message: 'user input too long, 33135 tokens exceeds max 32768 tokens (request_id: test)' } }), { status: 400 })
+  }
   if (!isSummary && mockMode === 'overflow') {
     mockMode = 'ok'
     return new Response(JSON.stringify({ error: { message: 'context window exceeded' } }), { status: 400 })
@@ -212,3 +216,103 @@ assert.equal(parseContextWindowInput(''), null)
 assert.equal(parseContextWindowInput('abc'), null)
 assert.equal(parseContextWindowInput('1.4m'), 1_400_000)
 console.log('PASS extra: window parse (empty resets, invalid is null, 1.4m works)')
+
+// Verify the exact Messages API envelope for chat and overflow recovery.
+const { setModel, setThinking, setThinkingEffort, setSafetyLevel, setPromptPreferences } =
+  await import('../src/services/settings.ts')
+setContextWindowOverride(300_000)
+setModel('deepseek-v4-pro')
+setThinking(true)
+setThinkingEffort('max')
+setSafetyLevel('low')
+setPromptPreferences([{ id: 'qa', name: 'Reviewer', text: 'Review the evidence first.' }], 'qa')
+requests.length = 0
+mockMode = 'overflow'
+await seed('custom-envelope', long.slice(0, 2))
+await send('custom-envelope')
+assert.deepEqual(requests.map(({ isSummary }) => isSummary), [false, true, false])
+for (const { body } of requests) {
+  assert.equal(body.model, 'deepseek-v4-pro')
+  assert.equal(body.system, 'Review the evidence first.')
+  assert.deepEqual(body.thinking, { type: 'enabled' })
+  assert.deepEqual(body.output_config, { effort: 'max' })
+  assert.deepEqual(body.safety_check, { level: 'low' })
+}
+const savedReply = useChatStore.getState().sessionCache['custom-envelope'].messages.at(-1)
+assert.deepEqual(savedReply.requestPreferences, {
+  apiMode: 'extended', system: 'Review the evidence first.', effort: 'max', safetyLevel: 'low', window: 300_000,
+})
+await new Promise((resolve) => setTimeout(resolve, 100))
+assert.deepEqual((await db.loadSession('custom-envelope')).messages.at(-1).requestPreferences, savedReply.requestPreferences)
+setThinking(false)
+requests.length = 0
+await seed('thinking-off', [round('off', 10)])
+await send('thinking-off')
+assert.deepEqual(requests.at(-1).body.thinking, { type: 'disabled' })
+assert.equal(requests.at(-1).body.output_config, undefined)
+console.log('PASS preferences: custom model, system prompt, effort and safety match the summary/retry envelope')
+
+const { continueReply } = await import('../src/services/chat/store.ts')
+setModel('deepseek-flash')
+setSafetyLevel('high')
+setPromptPreferences([], null)
+const savedSession = useChatStore.getState().sessionCache['custom-envelope']
+useChatStore.setState((state) => ({
+  sessionCache: {
+    ...state.sessionCache,
+    'custom-envelope': {
+      ...savedSession,
+      messages: savedSession.messages.map((message) => message.id === savedReply.id
+        ? { ...message, status: 'stopped' }
+        : message),
+    },
+  },
+}))
+requests.length = 0
+continueReply('custom-envelope', savedReply.id)
+for (let i = 0; i < 500 && useChatStore.getState().streaming['custom-envelope'] !== undefined; i++) {
+  await new Promise((resolve) => setTimeout(resolve, 2))
+}
+const continued = requests.at(-1).body
+assert.equal(continued.model, 'deepseek-v4-pro')
+assert.equal(continued.system, 'Review the evidence first.')
+assert.deepEqual(continued.output_config, { effort: 'max' })
+assert.deepEqual(continued.safety_check, { level: 'low' })
+console.log('PASS continuation: preferences survive changes to global settings')
+
+
+const { getDraft } = await import('../src/services/chat/drafts.ts')
+const { regenerateReply } = await import('../src/services/chat/store.ts')
+const { setApiMode } = await import('../src/services/settings.ts')
+setApiMode('extended')
+requests.length = 0
+mockMode = 'per-message'
+await seed('per-message', [round('limit', 10)])
+await send('per-message')
+assert.equal(requests.length, 1, 'per-message rejection must not trigger compaction or retry')
+const rejected = useChatStore.getState().sessionCache['per-message'].messages.at(-1)
+assert.deepEqual(rejected.error.localMessage, {
+  key: 'replySingleMessageLimit',
+  params: { actual: '33135', limit: '32768' },
+})
+assert.equal(getDraft('per-message').text, '继续')
+regenerateReply('per-message', rejected.id, 'standard')
+for (let i = 0; i < 500 && useChatStore.getState().streaming['per-message'] !== undefined; i++) {
+  await new Promise((resolve) => setTimeout(resolve, 2))
+}
+const standard = requests.at(-1).body
+for (const field of ['tools', 'safety_check', 'title']) assert.equal(field in standard, false)
+assert.ok(standard.messages.every((message) => message.role !== 'latest_reminder'))
+assert.equal(useSettings.getState().apiMode, 'extended')
+assert.equal(getDraft('per-message').text, '')
+assert.equal(requests.length, 2, 'standard retry runs only on explicit invocation')
+setApiMode('standard')
+requests.length = 0
+mockMode = 'overflow'
+await seed('standard-overflow', long.slice(0, 2))
+await send('standard-overflow')
+assert.deepEqual(requests.map(({ isSummary }) => isSummary), [false, true, false])
+for (const { body } of requests) {
+  for (const field of ['tools', 'safety_check', 'title']) assert.equal(field in body, false)
+}
+console.log('PASS API modes: per-message limit, draft restoration, explicit standard retry, and standard compaction')

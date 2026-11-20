@@ -1,10 +1,10 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest } from '../api/types.js'
-import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
+import { DEFAULT_SYSTEM_PROMPT, type ApiMode } from '../api/types.js'
+import { extractFileIds, getFileErrorCode, getSingleMessageLimit, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
-import { useSettings } from '../settings.js'
+import { selectedSystemPrompt, useSettings } from '../settings.js'
 import {
   appendBranch,
   getVisibleMessages,
@@ -19,6 +19,7 @@ import {
   clearSentDraft,
   getDraft,
   prepareDraftMessage,
+  setDraftText,
 } from './drafts.js'
 import { showToast } from '../../components/base/toastState.js'
 import {
@@ -28,6 +29,7 @@ import {
   evaluateCompaction,
   isContextOverflowError,
   resolveWindow,
+  serverTools,
 } from './compaction.js'
 import { isRiskyImageType } from '../images.js'
 import { errorSummary, logError, logInfo } from '../log.js'
@@ -50,14 +52,8 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = DEFAULT_MODEL
-/** 所有生成请求统一携带的助手身份说明 */
-const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
-/** 安全审核固定开启，所有请求都走扩展模式 */
-const SAFETY_CHECK = { level: 'high' } as const
 /** 服务端判定 file_id 失效后，重新补传并重发的最多次数（不含首次请求） */
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
@@ -81,17 +77,6 @@ const classifyPreparingFailure = (error: unknown, files: number): TranslationMes
     return { key: 'sendFailedWebView' }
   }
   return { key: 'sendFailedGeneric' }
-}
-
-/** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
-const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
-  const tools: CreateMessageRequest['tools'] = [
-    { type: 'deepseek_read_url', name: 'deepseek_read_url' },
-  ]
-  if (search) {
-    tools.push({ type: 'deepseek_web_search', name: 'deepseek_web_search' })
-  }
-  return tools
 }
 
 /** 允许自动补标题的请求；手动重命名后取消本轮标题写入，包含主动清空标题的情况。 */
@@ -302,15 +287,26 @@ export const bindChatPersistence = () => {
 }
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
-const createReply = (): AssistantMessage => {
-  const { thinking, search } = useSettings.getState()
+const createReply = (modeOverride?: ApiMode): AssistantMessage & {
+  requestPreferences: NonNullable<AssistantMessage['requestPreferences']>
+} => {
+  const settings = useSettings.getState()
+  const { model, thinking, search, thinkingEffort, safetyLevel, contextWindowOverride } = settings
+  const apiMode = modeOverride ?? settings.apiMode
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
-    model: MODEL,
+    model,
     thinking,
-    search,
+    requestPreferences: {
+      apiMode,
+      system: selectedSystemPrompt(settings),
+      effort: thinkingEffort,
+      safetyLevel,
+      window: resolveWindow(model, contextWindowOverride),
+    },
+    search: apiMode === 'extended' && search,
     prefix: true,
     status: 'pending',
     blocks: [],
@@ -710,7 +706,16 @@ export const compactNow = async (sessionId: string): Promise<ManualCompactionOut
   try {
     const settings = useSettings.getState()
     const result = await compactSession(session, settings.apiKey ?? '', undefined, {
-      envelope: { model: MODEL, policy: { window: resolveWindow(MODEL, settings.contextWindowOverride) } },
+      envelope: {
+        model: settings.model,
+        apiMode: settings.apiMode,
+        system: selectedSystemPrompt(settings),
+        thinking: settings.thinking,
+        search: settings.search,
+        effort: settings.thinkingEffort,
+        safetyLevel: settings.safetyLevel,
+        policy: { window: resolveWindow(settings.model, settings.contextWindowOverride) },
+      },
     })
     updateSession(sessionId, (current) => ({
       ...current,
@@ -815,7 +820,7 @@ export const sendMessage = (targetSessionId: string | null) => {
   }
   persist(sessionId)
   clearSentDraft(targetSessionId)
-  void streamReply(sessionId, reply, { history, question })
+  void streamReply(sessionId, reply, { history, question, restoreDraftOnLimit: true })
   return true
 }
 
@@ -902,7 +907,7 @@ export const pinSessions = (ids: string[], pinned = true) => {
 }
 
 /** 重新生成当前路径上的回答：在原问题下新增版本，不覆盖旧回答和后续对话。 */
-export const regenerateReply = (sessionId: string, messageId?: string) => {
+export const regenerateReply = (sessionId: string, messageId?: string, modeOverride?: ApiMode) => {
   if (get().importingHistory || deletingSessions.has(sessionId)) {
     return
   }
@@ -914,11 +919,24 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
   const index =
     messageId === undefined ? path.length - 1 : path.findIndex((m) => m.id === messageId)
   const question = path[index - 1]
-  if (question?.role !== 'user' || path[index]?.role !== 'assistant') {
+  const previous = path[index]
+  if (question?.role !== 'user' || previous?.role !== 'assistant') {
     return
   }
   const history = path.slice(0, index - 1)
-  const reply = createReply()
+  const fresh = createReply(modeOverride)
+  const reply: AssistantMessage = modeOverride === 'standard'
+    ? {
+        ...fresh,
+        model: previous.model ?? fresh.model,
+        thinking: previous.thinking ?? fresh.thinking,
+        requestPreferences: { ...(previous.requestPreferences ?? fresh.requestPreferences), apiMode: 'standard' },
+      }
+    : fresh
+  if (modeOverride === 'standard' && previous.error?.localMessage?.key === 'replySingleMessageLimit' &&
+    getDraft(sessionId).text === question.content && question.files.length === 0) {
+    setDraftText(sessionId, '')
+  }
   updateSession(sessionId, (s) => ({
     ...appendBranch(s, question.id, [reply]),
     updatedAt: Date.now(),
@@ -995,7 +1013,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
   const reply: AssistantMessage = {
     ...previous,
     // 未记录请求配置的回复，续写时使用默认模型和当前开关。
-    model: previous.model ?? MODEL,
+    model: previous.model ?? DEFAULT_MODEL,
     thinking: previous.thinking ?? thinking,
     search: previous.search ?? search,
     status: 'pending',
@@ -1035,7 +1053,7 @@ export const retryUpload = (sessionId: string, messageId: string) => {
   void streamReply(sessionId, reply, { history: path.slice(0, index - 1), question })
 }
 
-type Request = { history: Message[]; question: UserMessage; prefix?: AssistantMessage }
+type Request = { history: Message[]; question: UserMessage; prefix?: AssistantMessage; restoreDraftOnLimit?: boolean }
 
 /** 把补传得到的 serverId 写回会话里所有引用同一附件的消息（编辑、重新生成会共用附件） */
 const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
@@ -1285,7 +1303,8 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const controller = new AbortController()
-  if (!getSession(sessionId)?.title) {
+  const extended = initial.requestPreferences?.apiMode !== 'standard'
+  if (extended && !getSession(sessionId)?.title) {
     titleRequests.add(controller)
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
@@ -1299,6 +1318,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   streamFlushes.set(sessionId, flush)
 
   // 溢出恢复只试一次：DSH 的 maxOverflowRetries 默认 1，反复压缩没意义。
+  const model = initial.model ?? DEFAULT_MODEL
+  const preferences = initial.requestPreferences
+  const envelope = {
+    model,
+    apiMode: preferences?.apiMode,
+    system: preferences?.system ?? DEFAULT_SYSTEM_PROMPT,
+    thinking: initial.thinking ?? false,
+    search: initial.search ?? false,
+    effort: preferences?.effort,
+    safetyLevel: preferences?.safetyLevel ?? 'high' as const,
+    policy: { window: preferences?.window ?? resolveWindow(model, useSettings.getState().contextWindowOverride) },
+  }
   let compactedForOverflow = false
   try {
     for (let attempt = 0; ; attempt += 1) {
@@ -1319,8 +1350,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         let compaction = getSession(sessionId)?.compaction
         // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
         // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
-        const model = initial.model ?? MODEL
-        const window = resolveWindow(model, useSettings.getState().contextWindowOverride)
+        const window = envelope.policy.window
         const evaluation = evaluateCompaction(getContextRounds(prepared.history), compaction, window)
         logInfo('compaction', '自动压缩判定', evaluation)
         if (evaluation.triggered) {
@@ -1329,7 +1359,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
             try {
               const result = await compactSession(session, apiKey, controller.signal, {
-                envelope: { model, policy: { window } },
+                envelope,
               })
               compaction = {
                 summary: result.summary,
@@ -1354,24 +1384,27 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             }
           }
         }
-        logInfo('chat', '发起请求', { model: MODEL, rounds: getContextRounds(prepared.history).length, compaction: compaction !== undefined })
+        logInfo('chat', '发起请求', { model, rounds: getContextRounds(prepared.history).length, compaction: compaction !== undefined })
         const messages = toRequestMessages(
           prepared.history,
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
           latestReminder,
-          compaction
+          compaction,
+          extended
         )
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
-            model: initial.model ?? MODEL,
-            system: SYSTEM_PROMPT,
+            model,
+            system: envelope.system,
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
-            safety_check: SAFETY_CHECK,
-            tools: serverTools(initial.search ?? false),
+            ...(envelope.thinking && envelope.effort ? { output_config: { effort: envelope.effort } } : {}),
+            ...(extended
+              ? { safety_check: { level: envelope.safetyLevel }, tools: serverTools(envelope.search) }
+              : {}),
             ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
           },
           controller.signal
@@ -1441,7 +1474,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           continue
         }
         // 上下文溢出：DSH 的做法是压缩后重试一次；仍失败就照常报错。
-        if (!compactedForOverflow && isContextOverflowError(error)) {
+        const messageLimit = getSingleMessageLimit(error)
+        if (messageLimit && request.restoreDraftOnLimit && request.question.files.length === 0 &&
+          getDraft(sessionId).text === '' && getDraft(sessionId).attachments.length === 0) {
+          setDraftText(sessionId, request.question.content)
+        }
+        if (!messageLimit && !compactedForOverflow && isContextOverflowError(error)) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             compactedForOverflow = true
@@ -1453,10 +1491,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 controller.signal,
                 {
                   urgent: true,
-                  envelope: {
-                    model: initial.model ?? MODEL,
-                    policy: { window: resolveWindow(initial.model ?? MODEL, useSettings.getState().contextWindowOverride) },
-                  },
+                  envelope,
                 }
               )
               updateSession(sessionId, (current) => ({
@@ -1502,7 +1537,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             status: error.status,
             // 图片格式不支持这类错误，给中文说明；其余沿用服务端原文
             localMessage:
-              getFileErrorCode(error) === 'unsupportedImage'
+              messageLimit
+                ? { key: 'replySingleMessageLimit', params: messageLimit }
+                : getFileErrorCode(error) === 'unsupportedImage'
                 ? { key: 'apiImageUnsupported' }
                 : error.localMessage,
           })

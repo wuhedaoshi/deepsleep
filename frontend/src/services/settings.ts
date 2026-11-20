@@ -1,4 +1,11 @@
 import { create } from 'zustand'
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  type ApiMode,
+  type ChatModel,
+  type SafetyLevel,
+  type ThinkingEffort,
+} from './api/types.js'
 import type { TtsVoice } from './api/speech.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 
@@ -8,7 +15,15 @@ export type Locale = 'zh-CN' | 'en-US'
 export type ThemePreference = 'light' | 'dark' | 'system'
 
 /** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+export type PromptPreset = { id: string; name: string; text: string }
+
 type Settings = {
+  model: ChatModel
+  apiMode: ApiMode
+  thinkingEffort: ThinkingEffort
+  safetyLevel: SafetyLevel
+  promptPresets: PromptPreset[]
+  activePromptId: string | null
   apiKey: string | null
   locale: Locale
   themePreference: ThemePreference
@@ -25,6 +40,11 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'deepsleep:api-key',
+  model: 'deepsleep:model',
+  apiMode: 'deepsleep:api-mode',
+  thinkingEffort: 'deepsleep:thinking-effort',
+  safetyLevel: 'deepsleep:safety-level',
+  prompts: 'deepsleep:prompt-presets',
   locale: 'deepsleep:locale',
   location: 'deepsleep:location',
   themePreference: 'deepsleep:theme-preference',
@@ -103,8 +123,42 @@ const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide'
 const normalizeContextWindow = (value: number | null): number | null =>
   value !== null && Number.isFinite(value) && value > 0 ? value : null
 
+const initialPrompts = (): Pick<Settings, 'promptPresets' | 'activePromptId'> => {
+  try {
+    const saved = JSON.parse(read(KEYS.prompts) ?? 'null') as {
+      presets?: unknown
+      activeId?: unknown
+    } | null
+    const promptPresets = Array.isArray(saved?.presets)
+      ? saved.presets.filter(
+          (value): value is PromptPreset =>
+            value !== null &&
+            typeof value.id === 'string' &&
+            typeof value.name === 'string' &&
+            typeof value.text === 'string'
+        )
+      : []
+    return {
+      promptPresets,
+      activePromptId: promptPresets.find((item) => item.id === saved?.activeId)?.id ?? null,
+    }
+  } catch {
+    return { promptPresets: [], activePromptId: null }
+  }
+}
+
+const initialEffort = (): ThinkingEffort => {
+  const value = read(KEYS.thinkingEffort)
+  return value === 'low' || value === 'max' ? value : 'high'
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
+  apiMode: read(KEYS.apiMode) === 'standard' ? 'standard' : 'extended',
+  model: read(KEYS.model) === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
+  thinkingEffort: initialEffort(),
+  safetyLevel: read(KEYS.safetyLevel) === 'low' ? 'low' : 'high',
+  ...initialPrompts(),
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
@@ -168,7 +222,10 @@ export const setEnterKey = (enterKey: EnterKeyBehavior) => {
  * 用户以为设置了、其实没生效。
  */
 export const parseContextWindowInput = (raw: string): number | null => {
-  const text = raw.trim().toLowerCase().replace(/[_\s,]/g, '')
+  const text = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s,]/g, '')
   if (text === '') {
     return null
   }
@@ -181,11 +238,49 @@ export const parseContextWindowInput = (raw: string): number | null => {
     return null
   }
   const factor = match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1
-  return Math.round(base * factor)
+  const tokens = Math.round(base * factor)
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : null
 }
 
 export const setContextWindowOverride = (value: number | null) => {
   const contextWindowOverride = normalizeContextWindow(value)
-  write(KEYS.contextWindowOverride, contextWindowOverride === null ? null : String(contextWindowOverride))
+  write(
+    KEYS.contextWindowOverride,
+    contextWindowOverride === null ? null : String(contextWindowOverride)
+  )
   useSettings.setState({ contextWindowOverride })
+}
+
+export const setModel = (model: ChatModel) => {
+  write(KEYS.model, model)
+  useSettings.setState({ model })
+}
+
+export const setThinkingEffort = (thinkingEffort: ThinkingEffort) => {
+  write(KEYS.thinkingEffort, thinkingEffort)
+  useSettings.setState({ thinkingEffort })
+}
+
+export const setSafetyLevel = (safetyLevel: SafetyLevel) => {
+  write(KEYS.safetyLevel, safetyLevel)
+  useSettings.setState({ safetyLevel })
+}
+
+export const setPromptPreferences = (
+  promptPresets: PromptPreset[],
+  activePromptId: string | null
+) => {
+  write(KEYS.prompts, JSON.stringify({ presets: promptPresets, activeId: activePromptId }))
+  useSettings.setState({ promptPresets, activePromptId })
+}
+
+export const selectedSystemPrompt = ({
+  promptPresets,
+  activePromptId,
+}: Pick<Settings, 'promptPresets' | 'activePromptId'>) =>
+  promptPresets.find((preset) => preset.id === activePromptId)?.text.trim() || DEFAULT_SYSTEM_PROMPT
+
+export const setApiMode = (apiMode: ApiMode) => {
+  write(KEYS.apiMode, apiMode)
+  useSettings.setState({ apiMode })
 }

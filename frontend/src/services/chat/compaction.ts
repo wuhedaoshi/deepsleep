@@ -12,7 +12,15 @@
  * 要不要回退、怎么回退由调用方决定（见 docs/PLAN-1.3.8-COMPACTION.md）。
  */
 import { streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest, MessageUsage } from '../api/types.js'
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  type ApiMode,
+  type ChatModel,
+  type CreateMessageRequest,
+  type MessageUsage,
+  type SafetyLevel,
+  type ThinkingEffort,
+} from '../api/types.js'
 import { getVisibleMessages } from './branches.js'
 import { frameCheckpoint, getContextRounds, getReplyText, toRequestMessages } from './reply.js'
 import type {
@@ -293,12 +301,9 @@ const COMPACTION_QUESTION_ID = 'compaction-instruction'
 /** 与 store.ts 的 DEFAULT_MODEL 保持一致，会话里没有模型记录时用它。 */
 export const DEFAULT_MODEL: ChatModel = 'deepseek-flash'
 
-/** 与 store.ts 的 SYSTEM_PROMPT 逐字一致：前缀不同，provider 的缓存就命不中。 */
-const DEFAULT_SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
-
 /** 与 store.ts 的 serverTools 同形，工具声明同样属于请求前缀。 */
-const compactionTools = (search: boolean): CreateMessageRequest['tools'] => {
-  const tools: CreateMessageRequest['tools'] = [
+export const serverTools = (search: boolean): NonNullable<CreateMessageRequest['tools']> => {
+  const tools: NonNullable<CreateMessageRequest['tools']> = [
     { type: 'deepseek_read_url', name: 'deepseek_read_url' },
   ]
   if (search) {
@@ -313,6 +318,9 @@ export type CompactionRequestOptions = {
   system?: string
   /** 沿用会话的思考设置，压缩请求才与主请求同形 */
   thinking?: boolean
+  effort?: ThinkingEffort
+  safetyLevel?: SafetyLevel
+  apiMode?: ApiMode
   /** 是否声明联网搜索工具，与主请求一致 */
   search?: boolean
   /** 上一代 checkpoint：它属于被替换的内容，必须排在回放区间之前 */
@@ -336,7 +344,8 @@ export const buildCompactionRequest = (
     createdAt: 0,
   }
   // 复用主请求的装配逻辑：转换规则一致，这次调用才可能是主请求的真前缀。
-  const messages = toRequestMessages(history, instruction)
+  const extended = options.apiMode !== 'standard'
+  const messages = toRequestMessages(history, instruction, undefined, false, undefined, undefined, extended)
   if (options.previous !== undefined) {
     messages.unshift({ role: 'user', content: frameCheckpoint(options.previous.summary) })
   }
@@ -345,8 +354,8 @@ export const buildCompactionRequest = (
     system: options.system ?? DEFAULT_SYSTEM_PROMPT,
     messages,
     thinking: { type: options.thinking === true ? 'enabled' : 'disabled' },
-    safety_check: { level: 'high' },
-    tools: compactionTools(options.search === true),
+    ...(options.thinking && options.effort ? { output_config: { effort: options.effort } } : {}),
+    ...(extended ? { safety_check: { level: options.safetyLevel ?? 'high' }, tools: serverTools(options.search === true) } : {}),
   }
 }
 
@@ -430,6 +439,9 @@ export type CompactionEnvelope = {
   system?: string
   model?: ChatModel
   thinking?: boolean
+  effort?: ThinkingEffort
+  safetyLevel?: SafetyLevel
+  apiMode?: ApiMode
   search?: boolean
   policy?: Partial<CompactionPolicy>
 }
@@ -470,7 +482,10 @@ export const compactSession = async (
   const lastReply = rounds.at(-1)?.[1]
   const request = buildCompactionRequest(range, {
     model: options.envelope?.model ?? lastReply?.model ?? DEFAULT_MODEL,
-    system: options.envelope?.system,
+    system: options.envelope?.system ?? lastReply?.requestPreferences?.system,
+    effort: options.envelope?.effort ?? lastReply?.requestPreferences?.effort,
+    safetyLevel: options.envelope?.safetyLevel ?? lastReply?.requestPreferences?.safetyLevel,
+    apiMode: options.envelope?.apiMode ?? lastReply?.requestPreferences?.apiMode,
     thinking: options.envelope?.thinking ?? lastReply?.thinking ?? false,
     search: options.envelope?.search ?? lastReply?.search ?? false,
     previous: context.previous,
