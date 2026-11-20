@@ -10,23 +10,35 @@ import styles from './SearchOverlay.module.css'
  * 全屏搜索页：从右侧滑入覆盖当前界面，和官方 App 的搜索页一致。
  *
  * 输入框自动聚焦并弹出键盘；结果里标题命中排前，正文命中带上下文片段。
- * 关闭时先播完退场动画再卸载，避免闪一下消失。
+ * 面板保持挂载，滑入完成后再聚焦，避免动画中途被键盘触发重新布局。
  */
 export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
   const t = useTranslate()
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
-  const [mounted, setMounted] = useState(open)
+  const pendingFocus = useRef(false)
+  const focusSearch = () => {
+    if (pendingFocus.current) {
+      pendingFocus.current = false
+      inputRef.current?.focus({ preventScroll: true })
+    }
+  }
 
   useEffect(() => {
-    if (open) {
-      setMounted(true)
-      const timer = setTimeout(() => inputRef.current?.focus(), 180)
-      return () => clearTimeout(timer)
+    if (!open) {
+      pendingFocus.current = false
+      inputRef.current?.blur()
+      return
     }
-    const timer = setTimeout(() => setMounted(false), 280)
-    return () => clearTimeout(timer)
+    pendingFocus.current = true
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // transitionend 是主路径；动效关闭或事件未送达时仍可自动聚焦。
+    const fallback = setTimeout(focusSearch, reducedMotion ? 0 : 300)
+    return () => {
+      pendingFocus.current = false
+      clearTimeout(fallback)
+    }
   }, [open])
 
   useEffect(() => {
@@ -62,15 +74,26 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
     }
   }, [query, open])
 
-  if (!mounted) {
-    return null
-  }
-
   // 挂到 body：抽屉本身带 transform，fixed 定位会被限制在抽屉里，只盖住半屏。
   return createPortal(
-    <div className={`${styles.overlay} ${open ? styles.visible : ''}`} role="dialog">
+    <div
+      className={`${styles.overlay} ${open ? styles.visible : ''}`}
+      role="dialog"
+      aria-hidden={!open}
+      onTransitionEnd={(event) => {
+        if (open && event.target === event.currentTarget && event.propertyName === 'transform') {
+          focusSearch()
+        }
+      }}
+    >
       <div className={styles.header}>
-        <button type="button" className={styles.back} aria-label={t('back')} onClick={onClose}>
+        <button
+          type="button"
+          className={styles.back}
+          tabIndex={open ? 0 : -1}
+          aria-label={t('back')}
+          onClick={onClose}
+        >
           <IconChevronRightOutline14 />
         </button>
         <div className={styles.field}>
@@ -78,6 +101,7 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
           <input
             ref={inputRef}
             className={styles.input}
+            tabIndex={open ? 0 : -1}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('searchConversations')}
@@ -94,6 +118,7 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
               key={JSON.stringify([hit.id, hit.messageId])}
               type="button"
               className={styles.hit}
+              tabIndex={open ? 0 : -1}
               onClick={() => {
                 selectSession(hit.id, hit.messageId)
                 onClose()
