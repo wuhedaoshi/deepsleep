@@ -302,15 +302,10 @@ const COMPACTION_QUESTION_ID = 'compaction-instruction'
 export const DEFAULT_MODEL: ChatModel = 'deepseek-flash'
 
 /** 与 store.ts 的 serverTools 同形，工具声明同样属于请求前缀。 */
-export const serverTools = (search: boolean): NonNullable<CreateMessageRequest['tools']> => {
-  const tools: NonNullable<CreateMessageRequest['tools']> = [
-    { type: 'deepseek_read_url', name: 'deepseek_read_url' },
-  ]
-  if (search) {
-    tools.push({ type: 'deepseek_web_search', name: 'deepseek_web_search' })
-  }
-  return tools
-}
+export const serverTools = (): NonNullable<CreateMessageRequest['tools']> => [
+  { type: 'deepseek_read_url', name: 'deepseek_read_url' },
+  { type: 'deepseek_web_search', name: 'deepseek_web_search' },
+]
 
 export type CompactionRequestOptions = {
   model: ChatModel
@@ -345,7 +340,7 @@ export const buildCompactionRequest = (
   }
   // 复用主请求的装配逻辑：转换规则一致，这次调用才可能是主请求的真前缀。
   const extended = options.apiMode !== 'standard'
-  const messages = toRequestMessages(history, instruction, undefined, false, undefined, undefined, extended)
+  const messages = toRequestMessages(history, instruction, undefined, false, undefined, undefined, extended, extended && options.search === true)
   if (options.previous !== undefined) {
     messages.unshift({ role: 'user', content: frameCheckpoint(options.previous.summary) })
   }
@@ -355,7 +350,8 @@ export const buildCompactionRequest = (
     messages,
     thinking: { type: options.thinking === true ? 'enabled' : 'disabled' },
     ...(options.thinking && options.effort ? { output_config: { effort: options.effort } } : {}),
-    ...(extended ? { safety_check: { level: options.safetyLevel ?? 'high' }, tools: serverTools(options.search === true) } : {}),
+    ...(extended ? { safety_check: { level: options.safetyLevel ?? 'high' } } : {}),
+    ...(extended && options.search ? { tools: serverTools() } : {}),
   }
 }
 

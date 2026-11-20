@@ -67,6 +67,26 @@ export const AssistantMessage = memo(function AssistantMessage({
           hasResponse={!!responseText}
         />
       )}
+      {!refused && message.clientWeb ? (
+        message.clientWeb.status === 'found' ? (
+          <details className={styles.webSources}>
+            <summary>{t('clientWebSources', { count: message.clientWeb.sources.length })}</summary>
+            <ul>
+              {message.clientWeb.sources.map((source) => (
+                <li key={source.url}>
+                  <a href={source.url} target="_blank" rel="noopener noreferrer">
+                    {source.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : (
+          <div className={styles.webSources} role="status">
+            {t(message.clientWeb.status === 'empty' ? 'clientWebEmpty' : 'clientWebFailed')}
+          </div>
+        )
+      ) : null}
       {answer ? (
         <Markdown
           className="ds-assistant-message-main-content"

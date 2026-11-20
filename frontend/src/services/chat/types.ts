@@ -1,3 +1,4 @@
+import type { ClientWebResult } from '../api/clientWeb.js'
 import type { TranslationMessage } from '../../i18n/index.js'
 import type { ApiErrorKind } from '../api/client.js'
 import type {
@@ -94,6 +95,8 @@ export type AssistantMessage = MessageBranch & {
   }
   /** 请求时是否声明 deepseek_web_search；关闭时仍声明 deepseek_read_url */
   search?: boolean
+  /** 独立网页检索结果，续写复用；不回放到历史问题中。 */
+  clientWeb?: ClientWebResult
   /** 本轮请求的系统信息快照；各回答版本独立保存，续写沿用。历史消息中缺省的快照保持为空。 */
   latestReminder?: string
   /** 是否允许作为续写前缀；仍需满足回复状态与内容限制。 */

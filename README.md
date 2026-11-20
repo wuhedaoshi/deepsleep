@@ -9,17 +9,18 @@
 
 <img src="docs/img/phone-chat.png" width="320" alt="手机上的 Deepsleep">
 
-## 最终版本
+## 下载
 
 | 版本 | 适合谁 | 下载与源码 |
 |---|---|---|
 | **稳定版 1.2.21** | 首次安装和日常使用。支持消息搜索直达、导入导出和本地历史。 | [最终 APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.2.21/Deepsleep-1.2.21-final.apk) · [最终源码](https://github.com/wuhedaoshi/deepsleep/tree/v1.2.21-final) |
 | **实验版 1.3.21** | 想使用自动上下文压缩和手动 `/compact` 的用户。 | [最终 APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.3.21/Deepsleep-1.3.21-final.apk) · [最终源码](https://github.com/wuhedaoshi/deepsleep/tree/v1.3.21-final) |
 | **进阶实验版 1.3.23** | **不适合新手。** 需要了解 DeepSeek API、Key、计费和上下文限制。 | [APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.3.23/Deepsleep-1.3.23.apk) · [发布说明](https://github.com/wuhedaoshi/deepsleep/releases/tag/v1.3.23) |
+| **进阶实验版 1.3.24** | 延续 1.3.23 的进阶设置，两个 API 模式共用联网按钮。 | [APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.3.24/Deepsleep-1.3.24.apk) · [发布说明](https://github.com/wuhedaoshi/deepsleep/releases/tag/v1.3.24) |
 
 两个 `.21` 的最终包包含搜索展开、返回残影、首页搜索和设置栏吸顶等本地修复。原发布附件为较早构建，请下载带 `-final` 的附件。
 
-这三个 APK 共享包名 `com.deepsleep.app` 和签名。Android 的版本码分别为 145、146、148，向较高版本码更新可保留应用数据。已安装较高版本码时，Android 通常会阻止覆盖降级。切换版本前建议在设置中导出对话备份。
+这些 APK 共享包名 `com.deepsleep.app` 和签名。Android 的版本码分别为 145、146、148、149，向较高版本码更新可保留应用数据。已安装较高版本码时，Android 通常会阻止覆盖降级。切换版本前建议在设置中导出对话备份。
 
 ## 快速开始
 
@@ -29,12 +30,13 @@
 
 对话和设置保存在设备上，生成回复时会把所需的上下文发送给 DeepSeek 官方 API。生成费用由你的 DeepSeek API 账号承担。
 
-## 1.3.23 进阶设置
+## 1.3.23 / 1.3.24 进阶设置
 
 在 **设置 → 实验线设置** 可选择模型、思考强度、本地上下文压缩预算、安全检查和系统提示词预设。
 
 - **全家桶（默认）** 支持读链接、联网搜索、增强安全检查及自动标题。实测开启读链接或增强检查时，单条用户消息超过 **32,768 tokens** 会被拒绝；这和多轮总上下文是两个限制。
 - **标准 API** 适合长文本，省略上述扩展参数。实测同一条约 33K tokens 的纯文本请求在标准模式成功。收到单条超限提示后，可以编辑原消息，或明确选择仅本次用标准 API 重试。
+- 从 1.3.24 开始，关闭「联网搜索」会同时停用网页搜索和读链接。开启时，全家桶使用内置工具。标准 API 由 App 每次提问最多独立检索一次，可展开查看来源。[独立检索按次计费](https://api-docs.deepseek.com/guides/search/#billing)。
 - 上下文窗口设置影响应用何时压缩历史。DeepSeek Flash 和 V4 Pro 的[官方标称窗口](https://api-docs.deepseek.com/quick_start/pricing/)为 1M，应用的预算设置不会改变服务端限制。
 
 ## 它能做什么

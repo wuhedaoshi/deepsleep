@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
+import { appendWebContext, retrieveWeb } from '../api/clientWeb.js'
 import { DEFAULT_SYSTEM_PROMPT, type ApiMode } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, getSingleMessageLimit, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
@@ -306,7 +307,7 @@ const createReply = (modeOverride?: ApiMode): AssistantMessage & {
       safetyLevel,
       window: resolveWindow(model, contextWindowOverride),
     },
-    search: apiMode === 'extended' && search,
+    search,
     prefix: true,
     status: 'pending',
     blocks: [],
@@ -989,7 +990,7 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
   persist(sessionId)
 }
 
-/** 继续最后一条未完成的回答：保留原消息与开关，仅将新流的内容追加到原块之后。 */
+/** 继续最后一条未完成的回答：保留原消息与模型设置，按当前联网开关续写。 */
 export const continueReply = (sessionId: string, messageId: string) => {
   if (get().importingHistory || deletingSessions.has(sessionId)) {
     return
@@ -1015,7 +1016,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
     // 未记录请求配置的回复，续写时使用默认模型和当前开关。
     model: previous.model ?? DEFAULT_MODEL,
     thinking: previous.thinking ?? thinking,
-    search: previous.search ?? search,
+    search,
     status: 'pending',
     stopReason: undefined,
     stopDetails: undefined,
@@ -1330,6 +1331,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     safetyLevel: preferences?.safetyLevel ?? 'high' as const,
     policy: { window: preferences?.window ?? resolveWindow(model, useSettings.getState().contextWindowOverride) },
   }
+  let clientWeb = initial.clientWeb
   let compactedForOverflow = false
   try {
     for (let attempt = 0; ; attempt += 1) {
@@ -1347,6 +1349,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         updateReply(sessionId, reply)
         persist(sessionId)
         const apiKey = useSettings.getState().apiKey ?? ''
+        if (!extended && envelope.search && !clientWeb && !request.prefix) {
+          clientWeb = await retrieveWeb(apiKey, prepared.question.content, controller.signal)
+          reply = { ...reply, clientWeb }
+          updateReply(sessionId, reply)
+        }
         let compaction = getSession(sessionId)?.compaction
         // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
         // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
@@ -1387,12 +1394,16 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         logInfo('chat', '发起请求', { model, rounds: getContextRounds(prepared.history).length, compaction: compaction !== undefined })
         const messages = toRequestMessages(
           prepared.history,
-          prepared.question,
+          {
+            ...prepared.question,
+            content: appendWebContext(prepared.question.content, envelope.search ? clientWeb : undefined),
+          },
           prepared.prefix,
           initial.thinking ?? false,
           latestReminder,
           compaction,
-          extended
+          extended,
+          extended && envelope.search
         )
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
@@ -1402,9 +1413,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
             ...(envelope.thinking && envelope.effort ? { output_config: { effort: envelope.effort } } : {}),
-            ...(extended
-              ? { safety_check: { level: envelope.safetyLevel }, tools: serverTools(envelope.search) }
-              : {}),
+            ...(extended ? { safety_check: { level: envelope.safetyLevel } } : {}),
+            ...(extended && envelope.search ? { tools: serverTools() } : {}),
             ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
           },
           controller.signal

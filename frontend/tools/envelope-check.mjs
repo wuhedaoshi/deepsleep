@@ -36,6 +36,7 @@ const db = await import('../src/services/chat/db.ts')
 
 // ---- 假模型：记录每个请求的信封，并按需返回流式回答 ---------------------------
 const records = []
+const webRequests = []
 const summaryText =
   '## 主要请求与意图\n- 验证压缩请求信封。\n## 关键技术概念\n- 前后缀一致。\n' +
   '## 文件与代码\n- frontend/src/services/chat/compaction.ts\n## 错误与修复\n- （无）\n' +
@@ -47,8 +48,19 @@ const usage = {
   output_tokens: 10,
 }
 const encoder = new TextEncoder()
-globalThis.fetch = async (_url, init) => {
+globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body)
+  if (url.endsWith('/v1/tools/search')) {
+    webRequests.push(body)
+    if (body.query === '模拟检索失败') return new Response(null, { status: 503 })
+    return Response.json({
+      results: [{ url: 'https://example.com/source', title: 'Source', summary: 'Evidence' }],
+    })
+  }
+  if (url.endsWith('/v1/tools/fetch')) {
+    webRequests.push(body)
+    return Response.json({ title: 'Article', content: 'Extracted page text' })
+  }
   const lastMessage = body.messages.at(-1)
   const isCompaction = JSON.stringify(lastMessage).includes('压缩引擎')
   records.push({ body, isCompaction })
@@ -163,7 +175,7 @@ const custom = buildCompactionRequest(range, {
 })
 assert.equal(custom.system, customSystem)
 assert.deepEqual(custom.thinking, { type: 'disabled' })
-assert.equal(custom.tools.length, 1)
+assert.equal(custom.tools, undefined)
 console.log(
   'PASS 3 显式 envelope 生效：system/thinking/search 传什么就是什么（透传是改造人设的前置条件）'
 )
@@ -185,3 +197,41 @@ console.log(
 console.log(
   '结论：运行时没有 envelope 丢失，本次不动 compaction；改造人设时必须同时透传 system/thinking/search'
 )
+
+for (const [apiMode, search, question] of [
+  ['extended', false, '普通问题'],
+  ['extended', true, '联网问题'],
+  ['standard', false, '看看 https://example.com/article'],
+  ['standard', true, '联网查询'],
+  ['standard', true, '模拟检索失败'],
+  ['standard', true, '看看 https://example.com/article'],
+]) {
+  useSettings.setState({ apiMode, search })
+  records.length = 0
+  webRequests.length = 0
+  setDraftText(null, question)
+  sendMessage(null)
+  const id = useChatStore.getState().activeId
+  await waitIdle(id)
+  const body = records.find((record) => !record.isCompaction).body
+  assert.equal(Boolean(body.tools), apiMode === 'extended' && search)
+  assert.equal(Boolean(body.safety_check), apiMode === 'extended')
+  assert.equal(webRequests.length, apiMode === 'standard' && search ? 1 : 0)
+  if (apiMode === 'standard' && search) {
+    const explicitUrl = question.includes('https://')
+    assert.deepEqual(
+      webRequests[0],
+      explicitUrl
+        ? { url: 'https://example.com/article' }
+        : { query: question, count: 5, need_content: false }
+    )
+    const reply = (await db.loadSession(id)).messages.find((message) => message.role === 'assistant')
+    const failed = question === '模拟检索失败'
+    assert.equal(reply.clientWeb.status, failed ? 'failed' : 'found')
+    assert.equal(
+      JSON.stringify(body.messages).includes(explicitUrl ? 'Extracted page text' : 'Evidence'),
+      !failed
+    )
+  }
+}
+console.log('PASS 两种 API 模式的联网开关和标准模式读链接')

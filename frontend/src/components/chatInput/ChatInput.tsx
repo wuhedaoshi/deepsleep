@@ -288,15 +288,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
           </Tooltip>
-          <Tooltip
-            content={t(standard ? 'standardModeSearchUnavailable' : 'deactivatedSearchTooltip')}
-          >
+          <Tooltip content={t(standard ? 'standardModeSearchTooltip' : 'deactivatedSearchTooltip')}>
             <button
               type="button"
-              className={clsx(styles.toggle, !standard && search && styles.selected)}
+              className={clsx(styles.toggle, search && styles.selected)}
               aria-label={t('search')}
-              aria-pressed={!standard && search}
-              disabled={standard}
+              aria-pressed={search}
               onClick={() => setSearch(!search)}
             >
               <IconGlobeLanguageOutline14 />

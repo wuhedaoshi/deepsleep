@@ -384,7 +384,8 @@ export const toRequestMessages = (
   thinking = prefix?.thinking ?? false,
   latestReminder?: string,
   compaction?: SessionCompaction,
-  extended = true
+  extended = true,
+  webEnabled = extended
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   const rounds = getContextRounds(history)
@@ -410,12 +411,12 @@ export const toRequestMessages = (
       continue
     }
     appendReminder(reply.latestReminder)
-    messages.push(toUserParam(user), toAssistantParam(reply, false, false, extended))
+    messages.push(toUserParam(user), toAssistantParam(reply, false, false, webEnabled))
   }
   appendReminder(latestReminder)
   messages.push(toUserParam(question))
   if (prefix?.prefix) {
-    const assistant = toAssistantParam(prefix, true, thinking, extended)
+    const assistant = toAssistantParam(prefix, true, thinking, webEnabled)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。
     if (
       assistant.content.some(
