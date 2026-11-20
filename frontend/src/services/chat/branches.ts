@@ -115,3 +115,34 @@ export const selectVersion = (original: Session, messageId: string): Session => 
     ),
   }
 }
+
+/** 从根恢复目标消息的路径，保留目标之后已经选中的回答。 */
+export const revealMessage = (original: Session, messageId: string): Session => {
+  const session = normalizeSession(original)
+  if (getVisibleMessages(session).some((message) => message.id === messageId)) {
+    return original
+  }
+  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  const selected = new Map<string, string>()
+  let node = byId.get(messageId)
+  while (node && node.parentId != null) {
+    if (selected.has(node.parentId)) {
+      return original
+    }
+    selected.set(node.parentId, node.id)
+    node = byId.get(node.parentId)
+  }
+  if (!node) {
+    return original
+  }
+  return {
+    ...session,
+    rootMessageId: node.id,
+    messages: session.messages.map((message) => {
+      const childId = selected.get(message.id)
+      return childId === undefined || childId === message.selectedChildId
+        ? message
+        : { ...message, selectedChildId: childId }
+    }),
+  }
+}

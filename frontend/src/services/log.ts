@@ -11,6 +11,8 @@
  * 用户可以自己翻）、以及导出成文本走系统保存对话框。
  */
 
+import { BackupError, isBackupErrorKey } from './chat/history/errors.js'
+
 export type LogLevel = 'info' | 'warn' | 'error'
 
 export type LogEntry = {
@@ -336,6 +338,12 @@ export const logGrid = (tag: string) => {
  * 例：TypeError:r.at is not a function → TypeError（去掉调用现场与参数）
  */
 export const errorSummary = (error: unknown): string => {
+  // 导入失败的原因全在这一行：ZIP 解析失败、缺 manifest、版本过新、空会话在界面上都是
+  // 「无法识别该文件」，只有 error.key 能区分。这里只认白名单里的翻译键，
+  // 不把 message 原文抄进日志（它可能被任意 Error 伪造）。
+  if (error instanceof BackupError) {
+    return isBackupErrorKey(error.key) ? `${error.name}:${error.key}` : error.name
+  }
   if (error instanceof Error) {
     const name = error.name || 'Error'
     const code = /^[A-Z_]{3,}$/.exec(error.message)?.[0] ?? ''

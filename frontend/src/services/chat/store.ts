@@ -5,7 +5,13 @@ import type { ChatModel, CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
-import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
+import {
+  appendBranch,
+  getVisibleMessages,
+  normalizeSession,
+  revealMessage,
+  selectVersion,
+} from './branches.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -92,6 +98,7 @@ type ChatState = {
   sessionSaveErrors: Record<string, boolean>
   /** null 表示新对话（欢迎页） */
   activeId: string | null
+  messageJump: { sessionId: string; messageId: string } | null
   /** 正在生成回复的会话 */
   streaming: Record<string, AbortController>
 }
@@ -105,6 +112,7 @@ export const useChatStore = create<ChatState>(() => ({
   sessionLoadErrors: {},
   sessionSaveErrors: {},
   activeId: null,
+  messageJump: null,
   streaming: {},
 }))
 
@@ -526,16 +534,30 @@ export const replaceHistoryProgressively = async <T>(write: () => Promise<T>): P
 
 export const newChat = () => {
   if (!get().importingHistory) {
-    set({ activeId: null })
+    set({ activeId: null, messageJump: null })
     trimSessionCache()
   }
 }
 
-export const selectSession = (id: string) => {
+export const selectSession = (id: string, messageId?: string) => {
   if (!get().importingHistory && get().sessions.some((session) => session.id === id)) {
     touchSession(id)
-    set({ activeId: id })
-    void ensureSessionLoaded(id)
+    const jump = messageId ? { sessionId: id, messageId } : null
+    set({ activeId: id, messageJump: jump })
+    void ensureSessionLoaded(id).then(() => {
+      if (!jump || get().messageJump !== jump || get().activeId !== id || getStreamController(id)) {
+        return
+      }
+      const session = getSession(id)
+      if (!session) {
+        return
+      }
+      const revealed = revealMessage(session, jump.messageId)
+      if (revealed !== session) {
+        updateSession(id, () => revealed)
+        persist(id)
+      }
+    })
     trimSessionCache()
   }
 }

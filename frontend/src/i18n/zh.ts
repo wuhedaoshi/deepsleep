@@ -115,6 +115,7 @@ export const zh = {
   replyInsufficientBalance: '账户余额不足，请充值后重试',
   replyRateLimited: '请求过于频繁，请稍后再试',
   completionServerBusyToast: '服务器繁忙，请稍后再试',
+  apiTimeout: '等待响应超时，请检查网络后重试',
   unknownError: '未知错误',
   replyRefused: '你好，这个问题我暂时无法回答，让我们换个话题再聊聊吧。',
   uploadImageFormat: '这张图的格式本机认不出（可能是 HEIC/AVIF），换一张 JPEG/PNG 试试。',

@@ -40,10 +40,26 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
       setHits([])
       return
     }
+    let current = true
+    setHits([])
     const timer = setTimeout(() => {
-      void searchConversations(keyword).then(setHits)
+      void searchConversations(keyword).then(
+        (results) => {
+          if (current) {
+            setHits(results)
+          }
+        },
+        () => {
+          if (current) {
+            setHits([])
+          }
+        }
+      )
     }, 180)
-    return () => clearTimeout(timer)
+    return () => {
+      current = false
+      clearTimeout(timer)
+    }
   }, [query, open])
 
   if (!mounted) {
@@ -75,11 +91,11 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
         ) : (
           hits.map((hit) => (
             <button
-              key={hit.id}
+              key={JSON.stringify([hit.id, hit.messageId])}
               type="button"
               className={styles.hit}
               onClick={() => {
-                selectSession(hit.id)
+                selectSession(hit.id, hit.messageId)
                 onClose()
               }}
             >
