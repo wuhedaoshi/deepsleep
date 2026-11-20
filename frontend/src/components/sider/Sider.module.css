@@ -205,8 +205,8 @@
   bottom: 0;
   left: 0;
   z-index: 800;
-  transform: translateX(-102%);
-  box-shadow: 0 0 24px rgba(0, 0, 0, 0);
+  transform: translateX(-100%);
+  transition: transform var(--panel-motion-duration) var(--panel-motion-ease);
 }
 
 .drawerMask {
@@ -215,7 +215,7 @@
   z-index: 799;
   background: rgba(15, 23, 42, 0.28);
   opacity: 0;
-  transition: opacity 240ms ease;
+  transition: opacity var(--panel-motion-duration) ease;
 }
 
 .drawerBackdrop {
@@ -227,7 +227,6 @@
 
 .drawerLayer[data-open] .drawer {
   transform: translateX(0);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
 }
 
 .drawerLayer[data-open] .drawerMask {
@@ -512,4 +511,11 @@
 .selectBarPin:disabled,
 .selectBarDelete:disabled {
   opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawerMask {
+    transition: none;
+  }
 }

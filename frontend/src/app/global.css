@@ -1,4 +1,6 @@
 :root {
+  --panel-motion-duration: 240ms;
+  --panel-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --message-list-max-width: 840px;
   --message-list-padding-horizontal: 44px;
 }

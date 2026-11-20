@@ -6,7 +6,7 @@
   background: rgba(0, 0, 0, 0.32);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 220ms ease;
+  transition: opacity var(--panel-motion-duration) ease;
 }
 
 .maskOpen {
@@ -25,7 +25,7 @@
   border-radius: 20px 20px 0 0;
   box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.12);
   transform: translateY(100%);
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--panel-motion-duration) var(--panel-motion-ease);
 }
 
 .sheetOpen {
@@ -58,7 +58,9 @@
   color: var(--text-primary, #111827);
   font-size: 13px;
   cursor: pointer;
-  transition: transform 140ms ease, background 140ms ease;
+  transition:
+    transform 140ms ease,
+    background 140ms ease;
 }
 
 .tile:active {
@@ -76,4 +78,11 @@
   color: var(--text-secondary, #6b7280);
   font-size: 14px;
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mask,
+  .sheet {
+    transition: none;
+  }
 }
