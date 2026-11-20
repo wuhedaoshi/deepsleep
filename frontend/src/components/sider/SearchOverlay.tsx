@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslate } from '../../i18n/index.js'
 import { searchConversations, type SearchHit } from '../../services/chat/search.js'
@@ -6,13 +6,26 @@ import { selectSession } from '../../services/chat/store.js'
 import { IconChevronRightOutline14, IconSearchOutline16 } from '../base/icons.js'
 import styles from './SearchOverlay.module.css'
 
-/**
- * 全屏搜索页：从右侧滑入覆盖当前界面，和官方 App 的搜索页一致。
- *
- * 输入框自动聚焦并弹出键盘；结果里标题命中排前，正文命中带上下文片段。
- * 面板保持挂载，滑入完成后再聚焦，避免动画中途被键盘触发重新布局。
- */
-export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
+/** 搜索面板从触发框展开，展开后再唤起键盘。 */
+export const SearchOverlay = ({
+  open,
+  origin,
+  preparing,
+  onClose,
+}: {
+  open: boolean
+  origin?: DOMRect
+  preparing: boolean
+  onClose: (selected?: boolean) => void
+}) => {
+  const originStyle = origin
+    ? ({
+        '--search-x': `${origin.left}px`,
+        '--search-y': `${origin.top}px`,
+        '--search-end-x': `${origin.right}px`,
+        '--search-height': `${origin.height}px`,
+      } as CSSProperties)
+    : undefined
   const t = useTranslate()
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -34,7 +47,7 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
     pendingFocus.current = true
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     // transitionend 是主路径；动效关闭或事件未送达时仍可自动聚焦。
-    const fallback = setTimeout(focusSearch, reducedMotion ? 0 : 300)
+    const fallback = setTimeout(focusSearch, reducedMotion ? 0 : 340)
     return () => {
       pendingFocus.current = false
       clearTimeout(fallback)
@@ -77,11 +90,12 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
   // 挂到 body：抽屉本身带 transform，fixed 定位会被限制在抽屉里，只盖住半屏。
   return createPortal(
     <div
-      className={`${styles.overlay} ${open ? styles.visible : ''}`}
+      className={`${styles.overlay} ${open ? styles.visible : ''} ${preparing ? styles.preparing : ''}`}
+      style={originStyle}
       role="dialog"
       aria-hidden={!open}
       onTransitionEnd={(event) => {
-        if (open && event.target === event.currentTarget && event.propertyName === 'transform') {
+        if (open && event.target === event.currentTarget && event.propertyName === 'clip-path') {
           focusSearch()
         }
       }}
@@ -92,7 +106,7 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
           className={styles.back}
           tabIndex={open ? 0 : -1}
           aria-label={t('back')}
-          onClick={onClose}
+          onClick={() => onClose()}
         >
           <IconChevronRightOutline14 />
         </button>
@@ -121,7 +135,7 @@ export const SearchOverlay = ({ open, onClose }: { open: boolean; onClose: () =>
               tabIndex={open ? 0 : -1}
               onClick={() => {
                 selectSession(hit.id, hit.messageId)
-                onClose()
+                onClose(true)
               }}
             >
               <span className={styles.hitTitle}>{hit.title}</span>
