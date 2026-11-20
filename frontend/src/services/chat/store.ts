@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
+import { connectionFor } from '../api/connections.js'
+import { streamCompatibleChat } from '../api/compatibleChat.js'
 import { appendWebContext, retrieveWeb } from '../api/clientWeb.js'
 import { DEFAULT_SYSTEM_PROMPT, type ApiMode } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, getSingleMessageLimit, isRetryableApiError } from '../api/errors.js'
@@ -294,6 +296,7 @@ const createReply = (modeOverride?: ApiMode): AssistantMessage & {
   const settings = useSettings.getState()
   const { model, thinking, search, thinkingEffort, safetyLevel, contextWindowOverride } = settings
   const apiMode = modeOverride ?? settings.apiMode
+  const connection = connectionFor(settings, 'chat')
   return {
     id: createId(),
     role: 'assistant',
@@ -302,10 +305,11 @@ const createReply = (modeOverride?: ApiMode): AssistantMessage & {
     thinking,
     requestPreferences: {
       apiMode,
-      system: selectedSystemPrompt(settings),
+      ...(connection ? { externalModel: connection.model } : {}),
+      system: connection && !settings.activePromptId ? 'You are a helpful assistant.' : selectedSystemPrompt(settings),
       effort: thinkingEffort,
       safetyLevel,
-      window: resolveWindow(model, contextWindowOverride),
+      window: resolveWindow(model, contextWindowOverride, Boolean(connection)),
     },
     search,
     prefix: true,
@@ -710,12 +714,13 @@ export const compactNow = async (sessionId: string): Promise<ManualCompactionOut
       envelope: {
         model: settings.model,
         apiMode: settings.apiMode,
-        system: selectedSystemPrompt(settings),
+        connection: connectionFor(settings, 'chat'),
+        system: connectionFor(settings, 'chat') && !settings.activePromptId ? 'You are a helpful assistant.' : selectedSystemPrompt(settings),
         thinking: settings.thinking,
         search: settings.search,
         effort: settings.thinkingEffort,
         safetyLevel: settings.safetyLevel,
-        policy: { window: resolveWindow(settings.model, settings.contextWindowOverride) },
+        policy: { window: resolveWindow(settings.model, settings.contextWindowOverride, Boolean(connectionFor(settings, 'chat'))) },
       },
     })
     updateSession(sessionId, (current) => ({
@@ -758,6 +763,7 @@ export const sendMessage = (targetSessionId: string | null) => {
     return false
   }
   const { text, files } = prepared
+  if (files.length > 0 && connectionFor(useSettings.getState(), 'chat')) {return false}
   // `/compact`：本地指令，不进对话也不发请求。
   if (TEXT_COMPACT_COMMAND.test(text) && targetSessionId !== null) {
     clearSentDraft(targetSessionId)
@@ -931,7 +937,9 @@ export const regenerateReply = (sessionId: string, messageId?: string, modeOverr
         ...fresh,
         model: previous.model ?? fresh.model,
         thinking: previous.thinking ?? fresh.thinking,
-        requestPreferences: { ...(previous.requestPreferences ?? fresh.requestPreferences), apiMode: 'standard' },
+        requestPreferences: (fresh.requestPreferences.externalModel || previous.requestPreferences?.externalModel) ? fresh.requestPreferences : {
+          ...(previous.requestPreferences ?? fresh.requestPreferences), apiMode: 'standard',
+        },
       }
     : fresh
   if (modeOverride === 'standard' && previous.error?.localMessage?.key === 'replySingleMessageLimit' &&
@@ -1010,12 +1018,16 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, apiMode } = useSettings.getState()
+  const fresh = createReply()
+  const changedRoute = (previous.requestPreferences?.apiMode ?? 'extended') !== apiMode ||
+    previous.requestPreferences?.externalModel !== fresh.requestPreferences.externalModel
   const reply: AssistantMessage = {
     ...previous,
     // 未记录请求配置的回复，续写时使用默认模型和当前开关。
     model: previous.model ?? DEFAULT_MODEL,
     thinking: previous.thinking ?? thinking,
+    requestPreferences: changedRoute ? fresh.requestPreferences : previous.requestPreferences,
     search,
     status: 'pending',
     stopReason: undefined,
@@ -1305,6 +1317,9 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const controller = new AbortController()
   const extended = initial.requestPreferences?.apiMode !== 'standard'
+  const settings = useSettings.getState()
+  const connection = extended ? undefined : connectionFor(settings, 'chat')
+  const apiKey = settings.apiKey ?? ''
   if (extended && !getSession(sessionId)?.title) {
     titleRequests.add(controller)
   }
@@ -1324,12 +1339,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const envelope = {
     model,
     apiMode: preferences?.apiMode,
+    connection,
     system: preferences?.system ?? DEFAULT_SYSTEM_PROMPT,
     thinking: initial.thinking ?? false,
     search: initial.search ?? false,
     effort: preferences?.effort,
     safetyLevel: preferences?.safetyLevel ?? 'high' as const,
-    policy: { window: preferences?.window ?? resolveWindow(model, useSettings.getState().contextWindowOverride) },
+    policy: { window: preferences?.window ?? resolveWindow(model, settings.contextWindowOverride, Boolean(connection)) },
   }
   let clientWeb = initial.clientWeb
   let compactedForOverflow = false
@@ -1339,7 +1355,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let preparing = true
       let receivedContent = false
       try {
-        const prepared = await prepareFiles(sessionId, request, controller.signal)
+        if (connection && request.question.files.length > 0) {
+          preparing = false
+          throw new ApiError('protocol', { key: 'customChatTextOnly' })
+        }
+        const prepared = connection ? request : await prepareFiles(sessionId, request, controller.signal)
         preparing = false
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = prepared.prefix
@@ -1348,9 +1368,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
-        const apiKey = useSettings.getState().apiKey ?? ''
         if (!extended && envelope.search && !clientWeb && !request.prefix) {
-          clientWeb = await retrieveWeb(apiKey, prepared.question.content, controller.signal)
+          clientWeb = await retrieveWeb(apiKey, prepared.question.content, controller.signal, settings.apiMode === 'standard' ? settings.connections : undefined)
           reply = { ...reply, clientWeb }
           updateReply(sessionId, reply)
         }
@@ -1405,9 +1424,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           extended,
           extended && envelope.search
         )
-        const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
-          {
+        const body = {
             model,
             system: envelope.system,
             messages,
@@ -1416,9 +1433,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             ...(extended ? { safety_check: { level: envelope.safetyLevel } } : {}),
             ...(extended && envelope.search ? { tools: serverTools() } : {}),
             ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
-          },
-          controller.signal
-        )
+          } as const
+        const events = connection
+          ? streamCompatibleChat(connection, body, controller.signal)
+          : streamMessage(apiKey, body, controller.signal)
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
@@ -1497,7 +1515,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             try {
               const result = await compactSession(
                 session,
-                useSettings.getState().apiKey ?? '',
+                apiKey,
                 controller.signal,
                 {
                   urgent: true,

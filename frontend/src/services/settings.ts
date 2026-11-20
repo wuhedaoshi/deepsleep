@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { normalizeConnection, services, type Connection, type Connections, type Service } from './api/connections.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
   type ApiMode,
@@ -18,6 +19,7 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 export type PromptPreset = { id: string; name: string; text: string }
 
 type Settings = {
+  connections: Connections
   model: ChatModel
   apiMode: ApiMode
   thinkingEffort: ThinkingEffort
@@ -39,6 +41,7 @@ type Settings = {
 }
 
 const KEYS = {
+  connections: 'deepsleep:service-connections',
   apiKey: 'deepsleep:api-key',
   model: 'deepsleep:model',
   apiMode: 'deepsleep:api-mode',
@@ -77,6 +80,20 @@ const write = (key: string, value: string | null) => {
 }
 
 /** 位置选择模式跟随浏览器语言，与应用内选择的界面语言无关。 */
+const readConnections = (): Connections => {
+  try {
+    const saved = JSON.parse(read(KEYS.connections) ?? '{}')
+    const connections: Connections = {}
+    for (const service of services) {
+      const connection = normalizeConnection(service, saved?.[service])
+      if (connection) {connections[service] = connection}
+    }
+    return connections
+  } catch {
+    return {}
+  }
+}
+
 export const isChineseBrowser = (): boolean =>
   (typeof navigator === 'undefined' ? 'zh' : navigator.language).toLowerCase().startsWith('zh')
 
@@ -153,6 +170,7 @@ const initialEffort = (): ThinkingEffort => {
 }
 
 export const useSettings = create<Settings>(() => ({
+  connections: readConnections(),
   apiKey: read(KEYS.apiKey),
   apiMode: read(KEYS.apiMode) === 'standard' ? 'standard' : 'extended',
   model: read(KEYS.model) === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
@@ -189,6 +207,15 @@ export const setThemePreference = (themePreference: ThemePreference) => {
 export const setTtsVoice = (ttsVoice: TtsVoice) => {
   write(KEYS.ttsVoice, ttsVoice)
   useSettings.setState({ ttsVoice })
+}
+
+export const setConnection = (service: Service, value: Connection | null) => {
+  const connection = value && normalizeConnection(service, value)
+  if (value && !connection) {return false}
+  const connections = { ...useSettings.getState().connections, [service]: connection ?? undefined }
+  write(KEYS.connections, JSON.stringify(connections))
+  useSettings.setState({ connections })
+  return true
 }
 
 export const setApiKey = (apiKey: string | null) => {

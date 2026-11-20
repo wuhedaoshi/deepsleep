@@ -12,6 +12,8 @@
  * 要不要回退、怎么回退由调用方决定（见 docs/PLAN-1.3.8-COMPACTION.md）。
  */
 import { streamMessage } from '../api/client.js'
+import { streamCompatibleChat } from '../api/compatibleChat.js'
+import type { Connection } from '../api/connections.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
   type ApiMode,
@@ -86,12 +88,12 @@ export const MODEL_CONTEXT_WINDOWS: Record<ChatModel, number> = {
 
 export const contextWindowFor = (model: ChatModel): number => MODEL_CONTEXT_WINDOWS[model]
 
-export const resolveWindow = (model: ChatModel, override: number | null): number =>
+export const resolveWindow = (model: ChatModel, override: number | null, external = false): number =>
   override !== null &&
   Number.isFinite(override) &&
   override > COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
     ? override
-    : contextWindowFor(model)
+    : external ? 128_000 : contextWindowFor(model)
 
 /** 压力口径与 ContextMeter 一致：message_delta 里这四个数是整轮累计值。 */
 export const getPressureTokens = (usage: MessageUsage | undefined): number =>
@@ -390,11 +392,12 @@ export class CompactionError extends Error {
 const collectSummary = async (
   apiKey: string,
   request: CreateMessageRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  connection?: Connection
 ): Promise<string> => {
   let text = ''
   let truncated = false
-  for await (const event of streamMessage(apiKey, request, signal)) {
+  for await (const event of (connection ? streamCompatibleChat(connection, request, signal) : streamMessage(apiKey, request, signal))) {
     if (event.type === 'content_block_start') {
       if (event.content_block.type === 'text') {
         text += event.content_block.text
@@ -432,6 +435,7 @@ export type CompactionResult = {
 
 /** 覆盖默认请求信封的字段，用于让摘要请求与主请求完全同形。 */
 export type CompactionEnvelope = {
+  connection?: Connection
   system?: string
   model?: ChatModel
   thinking?: boolean
@@ -459,7 +463,8 @@ export const compactSession = async (
   signal?: AbortSignal,
   options: CompactionOptions = {}
 ): Promise<CompactionResult> => {
-  if (apiKey === '') {
+  const connection = options.envelope?.apiMode === 'standard' ? options.envelope.connection : undefined
+  if (apiKey === '' && !connection) {
     throw new CompactionError('no-api-key', '没有 API Key，摘要模型不可用')
   }
   const policy: CompactionPolicy = {
@@ -489,7 +494,7 @@ export const compactSession = async (
   const stop = signal ?? new AbortController().signal
   let summary: string
   try {
-    summary = await collectSummary(apiKey, request, stop)
+    summary = await collectSummary(apiKey, request, stop, connection)
   } catch (error) {
     if (stop.aborted) {
       throw error

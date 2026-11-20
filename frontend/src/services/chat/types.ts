@@ -88,6 +88,7 @@ export type AssistantMessage = MessageBranch & {
   /** 新回复持久化请求偏好，重试与续写保持一致。 */
   requestPreferences?: {
     apiMode?: ApiMode
+    externalModel?: string
     system: string
     effort: ThinkingEffort
     safetyLevel: SafetyLevel

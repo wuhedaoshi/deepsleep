@@ -1,4 +1,5 @@
 import { API_ORIGIN, readBodyText, request } from './client.js'
+import { bearer, type Connection } from './connections.js'
 
 export type ClientWebSource = { title: string; url: string; excerpt: string }
 export type ClientWebResult =
@@ -39,7 +40,8 @@ const publicUrl = (value: unknown): string => {
 export const retrieveWeb = async (
   apiKey: string,
   question: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  connections?: { search?: Connection; fetch?: Connection }
 ): Promise<ClientWebResult> => {
   const normalized = question.trim().replace(/\s+/g, ' ')
   if (!normalized) {
@@ -51,13 +53,24 @@ export const retrieveWeb = async (
   if (explicit && !url) {
     return { status: 'empty' }
   }
+  const connection = url ? connections?.fetch : connections?.search
+  const tavily = connection?.provider === 'tavily'
+  const path = url ? (tavily ? 'extract' : 'fetch') : 'search'
+  const body = url
+    ? tavily
+      ? { urls: [url], format: 'markdown' }
+      : { url }
+    : tavily
+      ? { query, max_results: MAX_SOURCES }
+      : { query, count: MAX_SOURCES, need_content: false }
   try {
     const response = await request(
-      `${API_ORIGIN}/v1/tools/${url ? 'fetch' : 'search'}`,
+      `${connection?.base ?? `${API_ORIGIN}/v1/tools`}/${path}`,
       {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(url ? { url } : { query, count: MAX_SOURCES, need_content: false }),
+        headers: { ...bearer(connection?.key ?? apiKey), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        ...(connection ? { redirect: 'error' as const } : {}),
         signal,
       },
       { responseTimeoutMs: TIMEOUT_MS, errorBodyTimeoutMs: TIMEOUT_MS }
@@ -65,17 +78,23 @@ export const retrieveWeb = async (
     const value = object(
       JSON.parse(await readBodyText(response, { signal, timeoutMs: TIMEOUT_MS, maxChars: 512_000 }))
     )
-    if (!value || (url ? typeof value.content !== 'string' : !Array.isArray(value.results))) {
+    if (
+      !value ||
+      (url && !tavily ? typeof value.content !== 'string' : !Array.isArray(value.results))
+    ) {
       return { status: 'failed' }
     }
-    const rows: unknown[] = url
-      ? [{ url, title: value.title, summary: value.content }]
-      : (value.results as unknown[])
+    const rows: unknown[] =
+      url && !tavily
+        ? [{ url, title: value.title, summary: value.content }]
+        : (value.results as unknown[])
     const sources: ClientWebSource[] = []
     for (const entry of rows.slice(0, MAX_SOURCES)) {
       const row = object(entry)
       const href = publicUrl(row?.url)
-      const excerpt = text(row?.summary, url ? 6000 : 1000) || text(row?.snippet, 1000)
+      const excerpt = tavily
+        ? text(url ? row?.raw_content : row?.content, url ? 6000 : 1000)
+        : text(row?.summary, url ? 6000 : 1000) || text(row?.snippet, 1000)
       if (href && excerpt && !sources.some((source) => source.url === href)) {
         sources.push({ url: href, title: text(row?.title, 180) || href, excerpt })
       }

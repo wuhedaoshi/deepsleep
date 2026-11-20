@@ -26,6 +26,7 @@ import {
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { IconButton } from '../base/IconButton.js'
 import { Tooltip } from '../base/Tooltip.js'
+import { connectionFor } from '../../services/api/connections.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
 import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
@@ -84,7 +85,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     return () => observer.disconnect()
   }, [t])
 
+  const customChat = useSettings((state) => Boolean(connectionFor(state, 'chat')))
   const acceptFiles = (files: File[]) => {
+    if (files.length && connectionFor(useSettings.getState(), 'chat')) {
+      showToast({ key: 'customChatTextOnly' })
+      return
+    }
     // 这条日志是「选完图什么都没发生」的第一现场：没有它只能猜是选择器还是上传。
     // 每次选择生成一个诊断 ID，把「原生结果 → 草稿写入 → 上传」串成一条链。
     const diag = createId()
@@ -116,7 +122,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   acceptFilesRef.current = acceptFiles
   const retryFile = useCallback(
     (id: string) => {
-      if (!useChatStore.getState().importingHistory && ensureApiKey()) {
+      if (
+        !useChatStore.getState().importingHistory &&
+        !connectionFor(useSettings.getState(), 'chat') &&
+        ensureApiKey()
+      ) {
         retryDraftAttachment(sessionId, id, useSettings.getState().apiKey ?? '')
       }
     },
@@ -191,6 +201,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       return
     }
     // 文本与上传完成态由提交动作读取最新快照，不使用上一次渲染的草稿。
+    if (customChat && getDraft(sessionId).attachments.length > 0) {
+      showToast({ key: 'customChatTextOnly' })
+      return
+    }
     if (!ensureApiKey() || !sendMessage(sessionId)) {
       return
     }
@@ -276,18 +290,20 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       <div className={styles.functionRow}>
         {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
         <div ref={togglesRef} className={styles.toggles}>
-          <Tooltip content={t('deactivatedThinkTooltip')}>
-            <button
-              type="button"
-              className={clsx(styles.toggle, thinking && styles.selected)}
-              aria-label={t('thinkingSwitch')}
-              aria-pressed={thinking}
-              onClick={() => setThinking(!thinking)}
-            >
-              <IconThinkOutline14 />
-              <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
-            </button>
-          </Tooltip>
+          {!customChat && (
+            <Tooltip content={t('deactivatedThinkTooltip')}>
+              <button
+                type="button"
+                className={clsx(styles.toggle, thinking && styles.selected)}
+                aria-label={t('thinkingSwitch')}
+                aria-pressed={thinking}
+                onClick={() => setThinking(!thinking)}
+              >
+                <IconThinkOutline14 />
+                <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
+              </button>
+            </Tooltip>
+          )}
           <Tooltip content={t(standard ? 'standardModeSearchTooltip' : 'deactivatedSearchTooltip')}>
             <button
               type="button"
@@ -310,7 +326,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             onClick={() => {
               if (
                 voice.status !== 'idle' ||
-                (!useChatStore.getState().importingHistory && ensureApiKey())
+                (!useChatStore.getState().importingHistory && ensureApiKey('asr'))
               ) {
                 void voice.toggle()
               }
@@ -320,8 +336,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             size="m"
             tone="primary"
             icon={<IconPaperclipOutline16 />}
-            tooltip={t('uploadFile')}
-            disabled={importingHistory}
+            tooltip={t(customChat ? 'customChatTextOnly' : 'uploadFile')}
+            disabled={importingHistory || customChat}
             onClick={() => {
               if (!ensureApiKey()) {
                 return

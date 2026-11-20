@@ -553,6 +553,11 @@ public class MainActivity extends Activity {
         // ——导入 364 MB 归档之后内存压力一大就复现，导出正好撞上。
         nativeBridge = new Object() {
             @JavascriptInterface
+            public String getOpenCodeNonce() {
+                return OpenCodeTransport.NONCE;
+            }
+
+            @JavascriptInterface
             public boolean hasNativePicker() {
                 return true;
             }
@@ -1362,6 +1367,7 @@ public class MainActivity extends Activity {
 
     private void handle(Socket socket) {
         try (Socket s = socket) {
+            s.setSoTimeout(20_000);
             InputStream in = s.getInputStream();
             StringBuilder head = new StringBuilder();
             int c;
@@ -1381,6 +1387,10 @@ public class MainActivity extends Activity {
             if (path.startsWith("/")) path = path.substring(1);
 
             OutputStream out = s.getOutputStream();
+            if (path.equals(OpenCodeTransport.PATH)) {
+                OpenCodeTransport.serve(head.toString(), in, out, PORT);
+                return;
+            }
             InputStream asset;
             try {
                 asset = getAssets().open("web/" + path);

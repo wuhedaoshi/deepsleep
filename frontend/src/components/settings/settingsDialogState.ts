@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { connectionFor, type Service } from '../../services/api/connections.js'
 import { useSettings } from '../../services/settings.js'
 
 /** 设置弹窗的分组：通用设置 / 数据管理 */
@@ -16,8 +17,9 @@ export const openSettings = (section: SettingsSection) =>
 export const closeSettings = () => useSettingsDialog.setState({ open: false })
 
 /** 没有 API Key 时打开设置并选中 API Key 所在的「数据管理」，返回是否已有 Key */
-export const ensureApiKey = () => {
-  if (useSettings.getState().apiKey) {
+export const ensureApiKey = (service: Service = 'chat') => {
+  const settings = useSettings.getState()
+  if (connectionFor(settings, service) || settings.apiKey) {
     return true
   }
   openSettings('data')

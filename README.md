@@ -39,6 +39,20 @@
 - 从 1.3.24 开始，关闭「联网搜索」会同时停用网页搜索和读链接。开启时，全家桶使用内置工具。标准 API 由 App 每次提问最多独立检索一次，可展开查看来源。[独立检索按次计费](https://api-docs.deepseek.com/guides/search/#billing)。
 - 上下文窗口设置影响应用何时压缩历史。DeepSeek Flash 和 V4 Pro 的[官方标称窗口](https://api-docs.deepseek.com/quick_start/pricing/)为 1M，应用的预算设置不会改变服务端限制。
 
+## 1.3.25 自定义服务提供商
+
+[下载 APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.3.25/Deepsleep-1.3.25.apk) · [参数教程 Readme.txt](release/Readme.txt)
+
+在 **设置 → 实验线设置 → API 模式 → 标准 API** 下展开 **服务提供商**。五项服务各自保存配置，默认使用 DeepSeek。切回全家桶后会使用 DeepSeek 内置工具，标准模式配置会保留。
+
+| 服务 | 预设与自定义协议 |
+|---|---|
+| 聊天模型 | DeepSeek、OpenCode Zen、硅基流动，或支持流式 OpenAI Chat Completions 的 HTTPS 地址。填写提供商的模型 ID。第三方聊天当前只发送文本。 |
+| 网页搜索、读取链接 | DeepSeek、Tavily，或兼容 DeepSeek Search / Fetch 协议的 HTTPS 地址。仍由输入框的联网按钮控制。 |
+| 语音输入、朗读 | DeepSeek，或兼容 DeepSeek ASR / TTS 的 HTTPS 地址。朗读需要原生 24 kHz、16 位单声道 PCM。 |
+
+每项服务使用自己的 Key。自定义端点须允许应用的 WebView 跨域访问。Android 版为 OpenCode 预设提供固定地址的原生请求通道。更换聊天服务后，后续请求会将用于生成回复的会话文本与检索摘录发给新服务。各项计费以相应服务商为准。
+
 ## 它能做什么
 
 | 能力 | 说明 |

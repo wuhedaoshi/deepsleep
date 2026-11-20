@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { ProviderSettings } from './ProviderSettings.js'
 import { createId } from '../../utils/id.js'
 import type { ThinkingEffort } from '../../services/api/types.js'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -250,6 +251,7 @@ const useHistoryDelete = () => {
 const ExperimentalSettings = () => {
   const t = useTranslate()
   const apiMode = useSettings((state) => state.apiMode)
+  const customChat = useSettings((state) => apiMode === 'standard' && Boolean(state.connections.chat))
   const model = useSettings((state) => state.model)
   const thinking = useSettings((state) => state.thinking)
   const effort = useSettings((state) => state.thinkingEffort)
@@ -272,7 +274,8 @@ const ExperimentalSettings = () => {
           />
         }
       />
-      <SettingCell
+      {apiMode === 'standard' && <ProviderSettings />}
+      {!customChat && <SettingCell
         label={t('settingsModel')}
         description={t('settingsModelHint')}
         status={null}
@@ -288,7 +291,8 @@ const ExperimentalSettings = () => {
           />
         }
       />
-      <SettingCell
+      }
+      {!customChat && <SettingCell
         label={t('settingsThinkingEffort')}
         status={null}
         action={
@@ -310,6 +314,7 @@ const ExperimentalSettings = () => {
           />
         }
       />
+      }
       <ContextWindowSetting />
       <SettingCell
         label={t('settingsSafetyLevel')}
@@ -346,14 +351,15 @@ const ContextWindowSetting = () => {
   })
   const [value, setValue] = useState(override === null ? '' : String(override))
   const minimum = COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
-  const window = resolveWindow(model, null)
+  const external = useSettings((state) => state.apiMode === 'standard' && Boolean(state.connections.chat))
+  const window = resolveWindow(model, null, external)
   const parsed = parseContextWindowInput(value)
   const invalid =
     choice === 'custom' && value.trim() !== '' && (parsed === null || parsed <= minimum)
   return (
     <SettingCell
       label={t('settingsContextWindow')}
-      description={t('settingsContextWindowHint', { window, minimum })}
+      description={t(external ? 'providerWindowHint' : 'settingsContextWindowHint', { window, minimum })}
       status={invalid ? { key: 'settingsContextWindowInvalid', params: { minimum } } : null}
       className={styles.contextWindowCell}
       action={

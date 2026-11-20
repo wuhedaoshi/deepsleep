@@ -225,7 +225,9 @@ for (const [apiMode, search, question] of [
         ? { url: 'https://example.com/article' }
         : { query: question, count: 5, need_content: false }
     )
-    const reply = (await db.loadSession(id)).messages.find((message) => message.role === 'assistant')
+    const reply = (await db.loadSession(id)).messages.find(
+      (message) => message.role === 'assistant'
+    )
     const failed = question === '模拟检索失败'
     assert.equal(reply.clientWeb.status, failed ? 'failed' : 'found')
     assert.equal(
@@ -235,3 +237,163 @@ for (const [apiMode, search, question] of [
   }
 }
 console.log('PASS 两种 API 模式的联网开关和标准模式读链接')
+
+// Exercise custom routing through the same store and stream pipeline as a real send.
+const { setConnection } = await import('../src/services/settings.ts')
+const { transcribe, synthesize } = await import('../src/services/api/speech.ts')
+const { connectionFor } = await import('../src/services/api/connections.ts')
+assert.equal(
+  setConnection('chat', {
+    provider: 'custom',
+    base: 'http://example.com/v1',
+    key: '',
+    model: 'demo',
+  }),
+  false
+)
+assert.equal(
+  setConnection('chat', {
+    provider: 'opencode',
+    base: '',
+    key: 'mock-chat-key',
+    model: 'deepseek-v4-pro',
+  }),
+  true
+)
+for (const service of ['search', 'fetch']) {
+  assert.equal(
+    setConnection(service, {
+      provider: 'tavily',
+      base: '',
+      key: 'mock-' + service + '-key',
+      model: '',
+    }),
+    true
+  )
+}
+for (const service of ['asr', 'tts']) {
+  assert.equal(
+    setConnection(service, {
+      provider: 'custom',
+      base: 'https://voice.example.com/' + service,
+      key: 'mock-' + service + '-key',
+      model: '',
+    }),
+    true
+  )
+}
+assert.ok(
+  !JSON.parse(localStorage.getItem('deepsleep:service-connections')).chat.base.includes(
+    'mock-chat-key'
+  )
+)
+const standardFetch = globalThis.fetch
+const routed = []
+globalThis.__deepsleepNative = { getOpenCodeNonce: () => 'mock-native-nonce' }
+globalThis.fetch = async (url, init) => {
+  if (
+    !url.includes('tavily.com') &&
+    !url.includes('voice.example.com') &&
+    url !== '/api/opencode/chat'
+  ) {
+    return standardFetch(url, init)
+  }
+  const record = { url, headers: new Headers(init.headers), body: init.body }
+  routed.push(record)
+  if (url.endsWith('/search')) {
+    return Response.json({
+      results: [{ url: 'https://example.com/result', content: 'Tavily source' }],
+    })
+  }
+  if (url.endsWith('/extract')) {
+    return Response.json({
+      results: [{ url: 'https://example.com/article', raw_content: 'Tavily excerpt' }],
+    })
+  }
+  if (url.endsWith('/asr')) {
+    assert.ok(init.body instanceof FormData)
+    return Response.json({ text: 'recognized audio' })
+  }
+  if (url.endsWith('/tts')) {
+    return new Response(new Uint8Array([1, 2]))
+  }
+  assert.equal(record.headers.get('x-deepsleep-opencode'), 'mock-native-nonce')
+  const chunks = [
+    { id: 'custom', choices: [{ delta: { reasoning_content: 'reason' }, finish_reason: null }] },
+    { id: 'custom', choices: [{ delta: { content: 'Compatible reply' }, finish_reason: 'stop' }] },
+  ]
+  return new Response(chunks.map((chunk) => 'data: ' + JSON.stringify(chunk) + '\n\n').join(''), {
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+}
+for (const [apiMode, search, question, expected] of [
+  ['standard', true, '混合检索', ['https://api.tavily.com/search', '/api/opencode/chat']],
+  [
+    'standard',
+    true,
+    '看看 https://example.com/article',
+    ['https://api.tavily.com/extract', '/api/opencode/chat'],
+  ],
+  ['standard', false, '只聊天', ['/api/opencode/chat']],
+  ['extended', false, '使用默认服务', []],
+]) {
+  useSettings.setState({ apiMode, search })
+  routed.length = 0
+  setDraftText(null, question)
+  sendMessage(null)
+  const id = useChatStore.getState().activeId
+  await waitIdle(id)
+  assert.deepEqual(
+    routed.map((call) => call.url),
+    expected
+  )
+  if (apiMode === 'standard') {
+    const chat = routed.at(-1)
+    assert.equal(chat.headers.get('authorization'), 'Bearer mock-chat-key')
+    const body = JSON.parse(chat.body)
+    assert.equal(body.model, 'deepseek-v4-pro')
+    assert.equal(body.tools, undefined)
+    assert.equal(body.safety_check, undefined)
+    assert.ok(!chat.body.includes('mock-'))
+    const reply = (await db.loadSession(id)).messages.find(
+      (message) => message.role === 'assistant'
+    )
+    assert.equal(reply.requestPreferences.externalModel, 'deepseek-v4-pro')
+    assert.ok(JSON.stringify(reply.blocks).includes('Compatible reply'))
+    if (search) {
+      assert.equal(
+        routed[0].headers.get('authorization'),
+        'Bearer mock-' + (question.includes('https://') ? 'fetch' : 'search') + '-key'
+      )
+      assert.ok(
+        chat.body.includes(question.includes('https://') ? 'Tavily excerpt' : 'Tavily source')
+      )
+    }
+  }
+}
+useSettings.setState({ apiMode: 'standard' })
+routed.length = 0
+const settings = useSettings.getState()
+const audio = new Blob([new Uint8Array([1, 2])])
+const controller = new AbortController()
+assert.equal(
+  await transcribe('', audio, controller.signal, connectionFor(settings, 'asr')),
+  'recognized audio'
+)
+const speech = await synthesize(
+  '',
+  'hello',
+  'stella',
+  controller.signal,
+  connectionFor(settings, 'tts')
+)
+assert.deepEqual((await speech.getReader().read()).value, new Uint8Array([1, 2]))
+assert.deepEqual(
+  routed.map((call) => call.headers.get('authorization')),
+  ['Bearer mock-asr-key', 'Bearer mock-tts-key']
+)
+assert.equal(setConnection('chat', null), true)
+assert.equal(connectionFor(useSettings.getState(), 'chat'), undefined)
+console.log(
+  'PASS standard-mode providers, native OpenCode route, isolated keys, web lookup, voice, and reset'
+)

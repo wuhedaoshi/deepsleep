@@ -3,6 +3,7 @@ import { compactWithFeedback, useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
 import { evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
 import { getContextRounds } from '../../services/chat/reply.js'
+import { connectionFor } from '../../services/api/connections.js'
 import { useSettings } from '../../services/settings.js'
 import { Tooltip } from '../base/Tooltip.js'
 import styles from './ContextMeter.module.css'
@@ -27,6 +28,7 @@ const formatTokens = (value: number): string => {
 export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
   const model = useSettings((state) => state.model)
+  const external = useSettings((state) => Boolean(connectionFor(state, 'chat')))
   const override = useSettings((state) => state.contextWindowOverride)
   const session = useChatStore((state) =>
     sessionId === null ? undefined : state.sessionCache[sessionId]
@@ -39,7 +41,7 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
     return null
   }
   const rounds = getContextRounds(getVisibleMessages(session))
-  const window = resolveWindow(model, override)
+  const window = resolveWindow(model, override, external)
   const evaluation = evaluateCompaction(rounds, session.compaction, window)
   const used = evaluation.pressure
   if (used <= 0) {

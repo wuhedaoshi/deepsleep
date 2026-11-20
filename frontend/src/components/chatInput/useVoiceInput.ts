@@ -1,3 +1,4 @@
+import { connectionFor } from '../../services/api/connections.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { transcribe } from '../../services/api/speech.js'
@@ -75,7 +76,8 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       controller = new AbortController()
       controllerRef.current = controller
       setStatus('transcribing')
-      const text = await transcribe(useSettings.getState().apiKey ?? '', audio, controller.signal)
+      const settings = useSettings.getState()
+      const text = await transcribe(settings.apiKey ?? '', audio, controller.signal, connectionFor(settings, 'asr'))
       if (controller.signal.aborted || operationRef.current !== operation) {
         return
       }

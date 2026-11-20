@@ -1,4 +1,5 @@
 import { ApiError, API_ORIGIN, readBodyText, request } from './client.js'
+import { bearer, type Connection } from './connections.js'
 
 /**
  * 语音接口：
@@ -19,16 +20,18 @@ export const TTS_SAMPLE_RATE = 24000
 export const transcribe = async (
   apiKey: string,
   audio: Blob,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  connection?: Connection
 ): Promise<string> => {
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
   const response = await request(
-    `${TOOLS_BASE_URL}/asr`,
+    `${connection?.base ?? TOOLS_BASE_URL}/asr`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: { ...bearer(connection?.key ?? apiKey) },
       body: form,
+      ...(connection ? { redirect: 'error' as const } : {}),
       signal,
     },
     { responseTimeoutMs: SPEECH_TIMEOUT_MS, errorBodyTimeoutMs: SPEECH_TIMEOUT_MS }
@@ -57,14 +60,16 @@ export const synthesize = async (
   apiKey: string,
   text: string,
   voice: TtsVoice,
-  signal: AbortSignal
+  signal: AbortSignal,
+  connection?: Connection
 ): Promise<ReadableStream<Uint8Array>> => {
   const response = await request(
-    `${TOOLS_BASE_URL}/tts`,
+    `${connection?.base ?? TOOLS_BASE_URL}/tts`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      headers: { ...bearer(connection?.key ?? apiKey), 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
+      ...(connection ? { redirect: 'error' as const } : {}),
       signal,
     },
     { responseTimeoutMs: SPEECH_TIMEOUT_MS, errorBodyTimeoutMs: SPEECH_TIMEOUT_MS }

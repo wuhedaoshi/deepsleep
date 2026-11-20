@@ -202,6 +202,7 @@ export const AssistantMessage = memo(function AssistantMessage({
               }}
             />
             {(() => {
+              if (message.requestPreferences?.externalModel) {return null}
               const cost = costOf(message.usage, new Date(message.createdAt))
               if (!cost) {
                 return null
