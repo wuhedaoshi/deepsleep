@@ -1,11 +1,7 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
 import { memo } from 'react'
-import {
-  IconBranchOutline16,
-  IconRefreshOutline16,
-  IconWarningOutline16,
-} from '../base/icons.js'
+import { IconBranchOutline16, IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
 import { continueReply, forkSession, regenerateReply } from '../../services/chat/store.js'
@@ -62,7 +58,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   const waiting = streaming && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
   return (
-    <div className={styles.message}>
+    <div className={styles.message} data-chat-message={message.id}>
       {refused ? null : (
         <ReplyArea
           message={message}

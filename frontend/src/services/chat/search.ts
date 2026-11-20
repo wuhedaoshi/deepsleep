@@ -9,6 +9,7 @@ export type SearchHit = {
   snippet: string
   /** 命中来自标题还是正文 */
   inTitle: boolean
+  messageId?: string
 }
 
 type IndexEntry = {
@@ -16,30 +17,21 @@ type IndexEntry = {
   title: string
   titleLower: string
   updatedAt: number
-  /** 全文小写拼接，用于 includes 检索 */
-  body: string
+  messages: { id: string; body: string }[]
 }
 
 let cache: IndexEntry[] | null = null
 let building: Promise<IndexEntry[]> | null = null
-/** 会话集合指纹：标题/数量变化时重建索引 */
 let fingerprint = ''
 
-const bodyOf = (session: Session): string => {
-  const parts: string[] = []
-  for (const message of session.messages) {
-    if (message.role === 'user') {
-      parts.push(message.content)
-      continue
-    }
-    for (const block of message.blocks) {
-      if (block.type === 'text') {
-        parts.push(block.text)
-      }
-    }
-  }
-  return parts.join('\n')
-}
+const messageIndex = (session: Session): IndexEntry['messages'] =>
+  session.messages.map((message) => ({
+    id: message.id,
+    body:
+      message.role === 'user'
+        ? message.content
+        : message.blocks.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n'),
+  }))
 
 const buildIndex = async (sessions: SessionSummary[]): Promise<IndexEntry[]> => {
   const entries: IndexEntry[] = []
@@ -54,28 +46,31 @@ const buildIndex = async (sessions: SessionSummary[]): Promise<IndexEntry[]> => 
       title,
       titleLower: title.toLowerCase(),
       updatedAt: summary.updatedAt,
-      body: bodyOf(session).toLowerCase(),
+      messages: messageIndex(session),
     })
   }
   return entries
 }
 
-/** 让索引与会话列表对齐；只有数量或标题变了才重建，避免每次输入都扫库。 */
+/** 让索引与会话列表对齐；会话元数据变化时才重建，避免每次输入都扫库。 */
 const ensureIndex = async (): Promise<IndexEntry[]> => {
   const sessions = await db.loadSessionSummaries()
-  const next = sessions.map((session) => `${session.id}:${session.title ?? ''}`).join('|')
+  const next = JSON.stringify(sessions.map(({ id, title, updatedAt }) => [id, title, updatedAt]))
   if (cache && next === fingerprint) {
     return cache
   }
   if (building) {
     return building
   }
-  fingerprint = next
-  building = buildIndex(sessions).then((entries) => {
-    cache = entries
-    building = null
-    return entries
-  })
+  building = buildIndex(sessions)
+    .then((entries) => {
+      fingerprint = next
+      cache = entries
+      return entries
+    })
+    .finally(() => {
+      building = null
+    })
   return building
 }
 
@@ -85,7 +80,7 @@ export const invalidateSearchIndex = () => {
 }
 
 const snippetOf = (body: string, keyword: string): string => {
-  const at = body.indexOf(keyword)
+  const at = body.toLowerCase().indexOf(keyword)
   if (at < 0) {
     return ''
   }
@@ -109,18 +104,21 @@ export const searchConversations = async (rawKeyword: string, limit = 60): Promi
   const entries = await ensureIndex()
   const hits: SearchHit[] = []
   for (const entry of entries) {
-    const inTitle = entry.titleLower.includes(keyword)
-    const snippet = inTitle ? '' : snippetOf(entry.body, keyword)
-    if (!inTitle && !snippet) {
-      continue
+    const base = { id: entry.id, title: entry.title || '新对话', updatedAt: entry.updatedAt }
+    if (entry.titleLower.includes(keyword)) {
+      hits.push({ ...base, inTitle: true, snippet: '' })
     }
-    hits.push({
-      id: entry.id,
-      title: entry.title || '新对话',
-      updatedAt: entry.updatedAt,
-      snippet,
-      inTitle,
-    })
+    let matches = 0
+    for (const message of entry.messages) {
+      const snippet = snippetOf(message.body, keyword)
+      if (!snippet) {
+        continue
+      }
+      hits.push({ ...base, inTitle: false, snippet, messageId: message.id })
+      if (++matches >= limit) {
+        break
+      }
+    }
   }
   hits.sort((a, b) => {
     if (a.inTitle !== b.inTitle) {

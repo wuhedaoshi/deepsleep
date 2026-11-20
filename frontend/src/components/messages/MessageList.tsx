@@ -5,7 +5,7 @@ import {
   getVisibleMessages,
   type MessageVersions,
 } from '../../services/chat/branches.js'
-import { selectMessageVersion } from '../../services/chat/store.js'
+import { selectMessageVersion, useChatStore } from '../../services/chat/store.js'
 import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
@@ -49,6 +49,12 @@ export const MessageList = ({
   const scrollTopRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const messages = getVisibleMessages(session)
+  const jump = useChatStore((state) => state.messageJump)
+  const handledJump = useRef<typeof jump>(null)
+  const targetId =
+    jump?.sessionId === session.id && messages.some((message) => message.id === jump.messageId)
+      ? jump.messageId
+      : undefined
   const [previousVersions, setPreviousVersions] = useState(() =>
     buildMessageVersions(session, new Map())
   )
@@ -98,6 +104,29 @@ export const MessageList = ({
     stickyRef.current = true
     scrollToBottom()
   }, [session.id, lastMessageId, scrollToBottom])
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    if (!scroll || !targetId || handledJump.current === jump) {
+      return
+    }
+    const target = scroll.querySelector<HTMLElement>(
+      `[data-chat-message="${CSS.escape(targetId)}"]`
+    )
+    if (!target) {
+      return
+    }
+    handledJump.current = jump
+    stickyRef.current = false
+    scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 20
+    scrollTopRef.current = scroll.scrollTop
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      target.animate(
+        [{ backgroundColor: 'rgba(100, 140, 255, 0.22)' }, { backgroundColor: 'transparent' }],
+        { duration: 2400 }
+      )
+    }
+  }, [jump, targetId, isMobile])
 
   useEffect(closeSearchPanel, [session.id, lastMessageId])
 
