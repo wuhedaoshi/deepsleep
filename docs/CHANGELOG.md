@@ -1,5 +1,45 @@
 # CHANGELOG（稳定线 release-1.2）
 
+## 1.3.19 · 实验线（超时收口 + 退后台不断流 + 导入日志脱敏）
+
+= 稳定线 1.2.18 全部内容（沿用 1.3.18 基线），另含：
+
+**本版核心：请求不会半死不活**
+
+- 响应头 **30s** 上限：超时抛 `ApiError('timeout')`，界面提示「等待响应超时，请检查网络后重试」
+  （新增 i18n 键 `apiTimeout`）。超时**只覆盖到响应头**，之后读流再久也不掐断正常长回答
+- 流式 **空闲 90s** 上限（`SseIdleTimeoutError`）：每次 `read()` 独立续期，正常长流不误判；
+  命中即取消连接并结束，**不重连、不重放**
+- 错误正文读取有界：**10s + 4096 字符**，修掉「非 2xx / 非 SSE + body 永不结束」把界面吊死
+- 上传总预算 **120s**，语音响应头等待预算 **120s**，识别响应体有独立 120s 预算，合成音频流可主动停止；`verify` 15s
+- 取消语义分开：用户点停止原样抛 `interrupted`，不报成超时；预取消的 signal 立刻结束，不等计时器
+- 同一个 signal 反复复用**不累积监听**（`AbortSignal.any` / `AbortSignal.timeout` 在 Chrome 103
+  之前不存在，故手工转发）；读流无论读完、超时、取消都释放 reader 锁
+
+**保留退后台时继续接收回复的策略**
+
+- `MainActivity.onPause()` **继续不调用** `web.onPause()` / `pauseTimers()`（旧版从未调用过，本版只是把这条
+  策略写成注释，免得后人「补回来」）：`pauseTimers()` 是进程级的，会把正在跑的流式回复连同它的超时计时
+  一起冻住，回来才补，看起来就是「流被打断」。
+  代价是后台期间 JS 仍会跑，只有确认「后台不需要继续收流」时才值得换回暂停
+- `onResume()` 仍调一次 `web.resumeTimers()`（重复调用无副作用），兜系统长时间后台自行挂起的情况
+
+**导入失败日志不再糊成一条**
+
+- 新增 `BACKUP_ERROR_KEYS` 白名单（8 个键）与 `isBackupErrorKey()`；`errorSummary()` 只记
+  `BackupError:<key>`，白名单外的任何字符串（可能是用户内容、也可能是伪造的）一律不落盘
+- 效果：ZIP 解析失败 / 缺 manifest / 版本过新 / 空会话在日志里重新可以区分
+
+**新增诊断脚本**（`frontend/tools`，`node --experimental-transform-types --import ./tools/run-ts.mjs`）
+
+- `api-timeout.mjs`（13 项）：响应头超时、主动取消、超时边界、错误正文上限、SSE 空闲、监听清理
+- `log-summary.mjs`（4 项）：导入失败只记可信错误码
+- `envelope-check.mjs`（4 项）：压缩请求信封与主请求逐项相等
+
+**验收**：`pnpm type` / `pnpm lint` / `pnpm build` 全通过，三个脚本全绿；
+APK `com.deepsleep.app`，versionCode **141** / versionName **1.3.19**。
+真机弱网及前后台切换未验证。
+
 ## 1.3.18 · 实验线（相册选择结果解析修复）
 
 = 稳定线 1.2.18 全部内容。本版修的是**「相册选完图什么都没发生」**的根因：

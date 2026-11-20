@@ -896,8 +896,11 @@ public class MainActivity extends Activity {
         if (snapshot != null) {
             snapshot.capture("pause");
         }
-        if (web != null) {
-        }
+        // 这里**故意不**调用 web.onPause() / web.pauseTimers()：退后台时正在生成的回复要继续收流，
+        // 用户切出去再回来，回答不能断在半截。pauseTimers() 尤其不能用——它是进程级的，
+        // 会冻结所有 WebView 的定时器，正在跑的流式回复与它的超时计时会一起停住，
+        // 回来之后才补，看起来就是「流被打断」。代价是后台期间 JS 仍会跑，
+        // 只有确认「后台不需要继续收流」时才值得换回暂停。
         super.onPause();
     }
 
@@ -914,6 +917,8 @@ public class MainActivity extends Activity {
         if (web == null) {
             return;
         }
+        // 从不调用 pauseTimers()（见 onPause 的取舍），这里留着是为了系统在长时间后台后
+        // 自行挂起定时器的情况：重复调用无副作用，回前台补一次更稳。
         web.resumeTimers();
         if (blankGuard != null) {
             blankGuard.probe("resume");

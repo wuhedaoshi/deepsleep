@@ -1,4 +1,4 @@
-import { ApiError, API_ORIGIN, request } from './client.js'
+import { ApiError, API_ORIGIN, readBodyText, request } from './client.js'
 
 /**
  * 语音接口：
@@ -7,6 +7,8 @@ import { ApiError, API_ORIGIN, request } from './client.js'
  * 鉴权都用 Authorization: Bearer。
  */
 const TOOLS_BASE_URL = `${API_ORIGIN}/v1/tools`
+/** 语音接口要等整段音频处理完才回响应头（ASR 最长 120 秒），通用上限不够用 */
+const SPEECH_TIMEOUT_MS = 120_000
 
 export type TtsVoice = 'stella' | 'tide'
 
@@ -21,13 +23,18 @@ export const transcribe = async (
 ): Promise<string> => {
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
-  const response = await request(`${TOOLS_BASE_URL}/asr`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal,
-  })
-  const raw = await response.text()
+  const response = await request(
+    `${TOOLS_BASE_URL}/asr`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal,
+    },
+    { responseTimeoutMs: SPEECH_TIMEOUT_MS, errorBodyTimeoutMs: SPEECH_TIMEOUT_MS }
+  )
+  // 识别结果是一整段 JSON：读取同样要有界，否则「头到了、body 不结束」会一直挂着
+  const raw = await readBodyText(response, { signal, timeoutMs: SPEECH_TIMEOUT_MS })
   let body: unknown
   try {
     body = JSON.parse(raw)
@@ -52,14 +59,19 @@ export const synthesize = async (
   voice: TtsVoice,
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
-  const response = await request(`${TOOLS_BASE_URL}/tts`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
-    signal,
-  })
+  const response = await request(
+    `${TOOLS_BASE_URL}/tts`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
+      signal,
+    },
+    { responseTimeoutMs: SPEECH_TIMEOUT_MS, errorBodyTimeoutMs: SPEECH_TIMEOUT_MS }
+  )
   if (!response.body) {
     throw new ApiError('protocol', await response.text())
   }
+  // 音频是边播边读的流，没有总时长上限：停止朗读由 readAloud 取消自己的 reader 完成
   return response.body
 }

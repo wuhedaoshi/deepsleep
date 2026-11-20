@@ -10,3 +10,26 @@ export class BackupError extends Error {
     this.key = key
   }
 }
+
+/**
+ * 归档导入会抛出的错误码全集。
+ *
+ * 日志只认这张表：`BackupError.message` 就是翻译键，但「看起来像键」的字符串同样能塞进任何
+ * `new Error(...)`，直接把 message 抄进日志等于把不受控文本落盘。这里改成白名单后，
+ * 日志里出现的每一个码都是本仓库自己写死的文案键，不含任何用户数据。
+ */
+export const BACKUP_ERROR_KEYS = [
+  'backupIncomplete',
+  'backupInvalidBranches',
+  'backupInvalidFiles',
+  'backupInvalidJson',
+  'backupInvalidVersion',
+  'backupNewerVersion',
+  'backupTooLarge',
+  'backupUnrecognized',
+] as const satisfies readonly TranslationKey[]
+
+const BACKUP_ERROR_KEY_SET: ReadonlySet<string> = new Set(BACKUP_ERROR_KEYS)
+
+export const isBackupErrorKey = (key: unknown): key is TranslationKey =>
+  typeof key === 'string' && BACKUP_ERROR_KEY_SET.has(key)

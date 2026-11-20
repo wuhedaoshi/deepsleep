@@ -132,6 +132,7 @@ export const en = {
   replyInsufficientBalance: 'Insufficient account balance. Please top up and try again.',
   replyRateLimited: 'Too many requests. Please try again later.',
   completionServerBusyToast: 'Server busy, please try again later.',
+  apiTimeout: 'Timed out waiting for a response. Check your network and try again.',
   unknownError: 'Unknown error',
   replyRefused: "Sorry, that's beyond my current scope. Let's talk about something else.",
   uploadImageFormat: 'This image format is not readable on this device (possibly HEIC/AVIF). Try a JPEG or PNG.',
