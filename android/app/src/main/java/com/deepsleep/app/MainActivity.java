@@ -150,6 +150,7 @@ public class MainActivity extends Activity {
     private WebView web;
     /** 强引用 JS 桥对象：只被行内表达式引用的话，GC 之后桥就失效了（见 addJavascriptInterface 处的注释）。 */
     private Object nativeBridge;
+    private PrivateBackups privateBackups;
     /** 白屏诊断与自动恢复 */
     private BlankScreenGuard blankGuard;
     /** 渲染进程重建次数：只在本进程内累计，页面正常加载后归零（不能持久化，否则装一次就永久用完） */
@@ -551,7 +552,17 @@ public class MainActivity extends Activity {
         // 必须用字段强引用这个对象：`addJavascriptInterface` 传一个行内匿名对象时，
         // GC 之后 JS 侧的调用会报 “Java bridge method can't be invoked on a non-injected object”
         // ——导入 364 MB 归档之后内存压力一大就复现，导出正好撞上。
+        if (privateBackups == null) privateBackups = new PrivateBackups(getNoBackupFilesDir());
         nativeBridge = new Object() {
+            @JavascriptInterface public String listPrivateBackups() { return privateBackups.list(); }
+            @JavascriptInterface public boolean beginPrivateBackup() { return privateBackups.begin(); }
+            @JavascriptInterface public boolean appendPrivateBackup(String value) { return privateBackups.append(value); }
+            @JavascriptInterface public boolean finishPrivateBackup() { return privateBackups.finish(); }
+            @JavascriptInterface public void abortPrivateBackup() { privateBackups.abort(); }
+            @JavascriptInterface public String readPrivateBackup(String name, long offset, int length) {
+                return privateBackups.read(name, offset, length);
+            }
+
             @JavascriptInterface
             public String readStorageWatermark() {
                 return getSharedPreferences("storage-health", MODE_PRIVATE).getString("watermark", "");
@@ -998,6 +1009,7 @@ public class MainActivity extends Activity {
             web.destroy();
             web = null;
         }
+        if (privateBackups != null) privateBackups.abort();
         super.onDestroy();
     }
 
