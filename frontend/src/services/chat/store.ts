@@ -25,7 +25,10 @@ import {
   compactSession,
   CompactionError,
   DEFAULT_MODEL,
-  evaluateCompaction,
+  evaluateRequestContext,
+  outputCapFor,
+  policyFor,
+  readContextOverflow,
   isContextOverflowError,
   resolveWindow,
 } from './compaction.js'
@@ -1299,6 +1302,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   streamFlushes.set(sessionId, flush)
 
   // 溢出恢复只试一次：DSH 的 maxOverflowRetries 默认 1，反复压缩没意义。
+  const model = initial.model ?? MODEL
+  let window = resolveWindow(model, useSettings.getState().contextWindowOverride)
+  let outputCap = outputCapFor(window)
+  let loweredOutput = false
+  const route = { model, system: SYSTEM_PROMPT, thinking: initial.thinking ?? false, search: initial.search ?? false }
   let compactedForOverflow = false
   try {
     for (let attempt = 0; ; attempt += 1) {
@@ -1319,17 +1327,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         let compaction = getSession(sessionId)?.compaction
         // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
         // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
-        const model = initial.model ?? MODEL
-        const window = resolveWindow(model, useSettings.getState().contextWindowOverride)
-        const evaluation = evaluateCompaction(getContextRounds(prepared.history), compaction, window)
+        const evaluation = evaluateRequestContext(
+          getContextRounds(prepared.history), compaction, policyFor(window, outputCap), route,
+          prepared.question.content, latestReminder
+        )
         logInfo('compaction', '自动压缩判定', evaluation)
-        if (evaluation.triggered) {
+        if (evaluation.triggered && !compactedForOverflow && !loweredOutput) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
             try {
               const result = await compactSession(session, apiKey, controller.signal, {
-                envelope: { model, policy: { window } },
+                envelope: { ...route, policy: policyFor(window, outputCap) },
               })
               compaction = {
                 summary: result.summary,
@@ -1366,7 +1375,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
-            model: initial.model ?? MODEL,
+            model,
+            max_tokens: outputCap,
             system: SYSTEM_PROMPT,
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
@@ -1441,7 +1451,21 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           continue
         }
         // 上下文溢出：DSH 的做法是压缩后重试一次；仍失败就照常报错。
-        if (!compactedForOverflow && isContextOverflowError(error)) {
+        const overflow = isContextOverflowError(error)
+        const measured = overflow && error instanceof ApiError &&
+          (error.status === 400 || error.status === 413) ? readContextOverflow(error) : undefined
+        if (measured && !receivedContent) {
+          window = Math.min(window, measured.window)
+          const remaining = measured.window - measured.input - 256
+          if (!loweredOutput && outputCap === measured.output && remaining >= 2048 && remaining < measured.output) {
+            loweredOutput = true
+            outputCap = remaining
+            logInfo('compaction', '按服务端余量降低输出上限后重试', { window: measured.window, input: measured.input, outputCap })
+            continue
+          }
+          logInfo('compaction', '服务端上下文用量', measured)
+        }
+        if (overflow && !receivedContent && !compactedForOverflow) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             compactedForOverflow = true
@@ -1454,8 +1478,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 {
                   urgent: true,
                   envelope: {
-                    model: initial.model ?? MODEL,
-                    policy: { window: resolveWindow(initial.model ?? MODEL, useSettings.getState().contextWindowOverride) },
+                    ...route,
+                    policy: policyFor(window, outputCap),
                   },
                 }
               )
@@ -1502,7 +1526,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             status: error.status,
             // 图片格式不支持这类错误，给中文说明；其余沿用服务端原文
             localMessage:
-              getFileErrorCode(error) === 'unsupportedImage'
+              overflow ? { key: 'replyContextOverflow' } : getFileErrorCode(error) === 'unsupportedImage'
                 ? { key: 'apiImageUnsupported' }
                 : error.localMessage,
           })

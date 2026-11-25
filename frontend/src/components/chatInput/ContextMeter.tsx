@@ -1,15 +1,24 @@
 import { useTranslate } from '../../i18n/index.js'
 import { compactWithFeedback, useChatStore } from '../../services/chat/store.js'
 import { getVisibleMessages } from '../../services/chat/branches.js'
-import { DEFAULT_MODEL, evaluateCompaction, resolveWindow } from '../../services/chat/compaction.js'
+import {
+  DEFAULT_MODEL,
+  evaluateRequestContext,
+  outputCapFor,
+  policyFor,
+  readContextOverflow,
+  resolveWindow,
+} from '../../services/chat/compaction.js'
 import { getContextRounds } from '../../services/chat/reply.js'
+import { useDrafts } from '../../services/chat/drafts.js'
+import { createLatestReminder } from '../../services/chat/latestReminder.js'
 import { useSettings } from '../../services/settings.js'
 import { Tooltip } from '../base/Tooltip.js'
 import styles from './ContextMeter.module.css'
 
 const formatTokens = (value: number): string => {
   if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`
+    return `${(value / 1_000_000).toFixed(2)}M`
   }
   if (value >= 1_000) {
     return `${(value / 1_000).toFixed(1)}k`
@@ -17,16 +26,13 @@ const formatTokens = (value: number): string => {
   return String(value)
 }
 
-/**
- * 上下文用量：取当前分支最后一次请求的 usage 推算。
- *
- * 一次请求的上下文 = 未命中输入 + 缓存命中输入 + 缓存创建 + 本轮输出，
- * 这几个数在 message_delta 里是整轮累计值，因此最接近“现在占用多少”。
- * 没有 usage（比如刚导入的历史）时退回按字符估算，估得粗但比不显示好。
- */
+/** 接近发送口径的输入估算，或展示最近一次被拒请求的服务端用量。 */
 export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
-  const override = useSettings((state) => state.contextWindowOverride)
+  const settings = useSettings()
+  const { contextWindowOverride, thinking, search } = settings
+  const model = DEFAULT_MODEL
+  const draft = useDrafts((state) => state.drafts.get(sessionId)?.text ?? '')
   const session = useChatStore((state) =>
     sessionId === null ? undefined : state.sessionCache[sessionId]
   )
@@ -37,10 +43,36 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
   if (!session) {
     return null
   }
-  const rounds = getContextRounds(getVisibleMessages(session))
-  const window = resolveWindow(DEFAULT_MODEL, override)
-  const evaluation = evaluateCompaction(rounds, session.compaction, window)
-  const used = evaluation.pressure
+  const visible = getVisibleMessages(session)
+  const tail = visible.at(-1)
+  const tailQuestion = visible.at(-2)
+  const activeQuestion =
+    !draft &&
+    tail?.role === 'assistant' &&
+    (tail.status === 'pending' || tail.status === 'streaming') &&
+    tailQuestion?.role === 'user'
+      ? tailQuestion.content
+      : ''
+  const observed =
+    !draft && tail?.role === 'assistant' && tail.status === 'error' && tail.model === model
+      ? readContextOverflow(tail.error?.message)
+      : undefined
+  const window = observed?.window ?? resolveWindow(model, contextWindowOverride)
+  const policy = policyFor(window, observed?.output ?? outputCapFor(window))
+  const evaluation = evaluateRequestContext(
+    getContextRounds(visible),
+    session.compaction,
+    policy,
+    {
+      model,
+      thinking,
+      search,
+      system: '该助手为DeepSeek，由深度求索公司创造。',
+    },
+    draft || activeQuestion,
+    createLatestReminder(settings)
+  )
+  const used = observed ? observed.input + observed.output : evaluation.pressure
   if (used <= 0) {
     return null
   }
@@ -54,11 +86,23 @@ export const ContextMeter = ({ sessionId }: { sessionId: string | null }) => {
     compactWithFeedback(sessionId)
   }
   return (
-    <Tooltip content={t('contextUsageTooltip', {
-      pressure: used.toLocaleString(),
-      threshold: evaluation.threshold.toLocaleString(),
-      source: evaluation.source === 'usage' ? 'usage' : t('contextSourceEstimate'),
-    })}>
+    <Tooltip
+      content={
+        observed
+          ? t('contextServerUsage', {
+              input: observed.input.toLocaleString(),
+              output: observed.output.toLocaleString(),
+              window: observed.window.toLocaleString(),
+            })
+          : t('contextUsageTooltip', {
+              pressure: used.toLocaleString(),
+              threshold: evaluation.threshold.toLocaleString(),
+              source: t(
+                evaluation.source === 'usage' ? 'contextSourceProjected' : 'contextSourceEstimate'
+              ),
+            })
+      }
+    >
       <button
         type="button"
         className={styles.meter}
