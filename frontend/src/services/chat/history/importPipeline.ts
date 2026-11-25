@@ -17,6 +17,7 @@ export type ImportedFile = { id: string; blob: Blob }
 export type ImportOptions = {
   /** 是否把图片等原件一起写入本地库；关闭时附件只留元数据，聊天里显示文件名 */
   includeAttachments: boolean
+  localSnapshot?: boolean
   /** 断点续传：这些会话 id 已经在库里，直接跳过 */
   done?: readonly string[]
 }
@@ -80,14 +81,18 @@ const referencedFiles = (
 const readFiles = async (
   archive: HistoryArchive,
   session: Session,
-  sessionId: string
+  sessionId: string,
+  verify: boolean
 ): Promise<ImportedFile[]> => {
   const wanted = referencedFiles(archive, session, sessionId)
   const files: ImportedFile[] = []
   for (let at = 0; at < wanted.length; at += FILE_CONCURRENCY) {
     const batch = await Promise.all(
       wanted.slice(at, at + FILE_CONCURRENCY).map(async (item) => {
-        const blob = await archive.attachmentBlob(item.attachment)
+        const blob = await archive.attachmentBlob(item.attachment, verify)
+        if (verify && blob === undefined) {
+          throw new BackupError('backupIncomplete')
+        }
         return blob === undefined ? undefined : { id: item.id, blob }
       })
     )
@@ -143,9 +148,9 @@ export const runImport = async (
     try {
       // 走 `archive.sessionOf`：它会在转换前按 export_path 绑定附件 id，
       // 直接调 `sessionFromArchive` 会绕过绑定，附件原件全查不到（MIME 也是空）。
-      session = await archive.sessionOf(ref)
+      session = await archive.sessionOf(ref, options.localSnapshot)
     } catch (error) {
-      if (error instanceof BackupError) {
+      if (!options.localSnapshot && error instanceof BackupError) {
         skipped += 1
         bytes += ref.bytes
         report('')
@@ -160,7 +165,7 @@ export const runImport = async (
       ...(ref.pinned ? { pinned: true } : {}),
     }
     const originals = options.includeAttachments
-      ? await readFiles(archive, merged, ref.id)
+      ? await readFiles(archive, merged, ref.id, options.localSnapshot === true)
       : []
     await sink.putSession(merged, originals)
     imported += 1

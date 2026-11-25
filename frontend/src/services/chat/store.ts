@@ -294,6 +294,8 @@ const persist = (sessionId: string) => {
           return
         }
         refreshWatermark('save')
+        void import('./backup.js').then(({ scheduleAutoBackup }) => scheduleAutoBackup())
+          .catch(db.reportStorageError('schedule automatic backup'))
         if (pendingFiles.get(sessionId) === files) {
           pendingFiles.delete(sessionId)
         }
@@ -406,6 +408,7 @@ export const initChat = (): Promise<void> => {
         set({ ready: true, storageWarning, sessions: sortSessions(summaries) })
         if (!storageWarning && summaries.length > 0) {
           writeStorageWatermark(summaries.length, db.DB_VERSION, 'save')
+          void import('./backup.js').then(({ scheduleAutoBackup }) => scheduleAutoBackup())
         }
         logInfo('boot', 'initChat: 列表就绪')
         void (async () => {

@@ -1,3 +1,5 @@
+import { hasPrivateBackups, latestPrivateBackup, openPrivateBackup, savePrivateBackup } from './privateBackup.js'
+import type { ZipSource } from './history/zip.js'
 import { formatDate } from '../../utils/format.js'
 import { errorSummary, logError, logInfo } from '../log.js'
 import * as db from './db.js'
@@ -77,7 +79,7 @@ export const exportHistory = (): Promise<ExportOutcome> =>
 
 /** 确认覆盖后分批暂存，归档完整处理后再原子替换旧历史。 */
 export const importHistory = (
-  file: File,
+  file: ZipSource,
   options: ImportOptions,
   onProgress?: (progress: ImportProgress) => void
 ): Promise<ImportResult> =>
@@ -121,3 +123,54 @@ export const clearHistory = (): Promise<void> =>
       throw error
     }
   })
+
+let backupScheduled = false
+let nextBackupCheck = 0
+const DAY_MS = 86_400_000
+
+/** Only committed history enters the private snapshot. */
+export const scheduleAutoBackup = () => {
+  if (!hasPrivateBackups() || backupScheduled || Date.now() < nextBackupCheck) {
+    return
+  }
+  backupScheduled = true
+  void enqueueBackup(async () => {
+    const last = latestPrivateBackup()
+    if (last && Date.now() - last.timestamp < DAY_MS) {
+      nextBackupCheck = last.timestamp + DAY_MS
+      return
+    }
+    const state = useChatStore.getState()
+    if (state.storageWarning || Object.keys(state.streaming).length > 0) {
+      return
+    }
+    nextBackupCheck = Date.now() + 60_000
+    const summaries = await db.loadSessionSummaries()
+    if (!summaries.length) {
+      return
+    }
+    async function* sessions() {
+      for (const info of summaries) {
+        const session = await db.loadSession(info.id)
+        if (!session) {
+          throw new Error('PRIVATE_BACKUP_SESSION_CHANGED')
+        }
+        yield session
+      }
+    }
+    const { exportArchiveTo } = await import('./history/exportArchive.js')
+    await savePrivateBackup((sink) => exportArchiveTo({ sessions: sessions(), file: db.loadFile, localSnapshot: true }, sink))
+    nextBackupCheck = Date.now() + DAY_MS
+    logInfo('storage', '自动备份已提交', { count: summaries.length })
+  }).catch(db.reportStorageError('automatic backup')).finally(() => {
+    backupScheduled = false
+  })
+}
+
+export const restorePrivateBackup = async (name?: string): Promise<ImportResult> => {
+  const source = openPrivateBackup(name)
+  if (!source) {
+    throw new Error('PRIVATE_BACKUP_MISSING')
+  }
+  return importHistory(source, { includeAttachments: true, localSnapshot: true })
+}
