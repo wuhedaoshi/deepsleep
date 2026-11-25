@@ -1,6 +1,7 @@
 import { formatDate } from '../../utils/format.js'
 import { errorSummary, logError, logInfo } from '../log.js'
 import * as db from './db.js'
+import { BackupError } from './history/errors.js'
 import type { ImportOptions, ImportProgress, ImportResult } from './history/importArchive.js'
 import { replaceHistory, replaceHistoryProgressively, useChatStore } from './store.js'
 import type { Session } from './types.js'
@@ -57,23 +58,24 @@ export const exportHistory = (): Promise<ExportOutcome> =>
       file: (id: string) => db.loadFile(id),
     }
     const name = backupFileName(new Date())
+    logInfo('storage', '开始导出历史', { sessionCount: sessions.length })
     const { canSaveToDisk, saveArchive } = await import('./history/archiveSink.js')
     if (canSaveToDisk()) {
       const { exportArchiveTo } = await import('./history/exportArchive.js')
       const path = await saveArchive(name, (sink) => exportArchiveTo(source, sink))
+      logInfo('storage', '历史导出完成', { sessionCount: sessions.length })
       return { name, path }
     }
     const { exportArchive } = await import('./history/exportArchive.js')
-    return { name, blob: await exportArchive(source) }
+    const blob = await exportArchive(source)
+    logInfo('storage', '历史导出完成', { sessionCount: sessions.length, bytes: blob.size })
+    return { name, blob }
+  }).catch((error: unknown) => {
+    db.reportStorageError('export history')(error)
+    throw error
   })
 
-/**
- * 确认覆盖后调用：先打开归档校验格式与版本——这一步只读中央目录，不动本地数据；
- * 通过后清库、按会话逐个写入，每个会话解析完就落盘，中断时已写入的会话仍然可用。
- *
- * 与 v1.2.5 的关键差别：不再把整包读进内存、也不再走「暂存 + 一次性提交」，
- * 372 MB 的归档在手机上按会话推进才跑得动。
- */
+/** 确认覆盖后分批暂存，归档完整处理后再原子替换旧历史。 */
 export const importHistory = (
   file: File,
   options: ImportOptions,
@@ -88,9 +90,13 @@ export const importHistory = (
     try {
       const archive = await openHistoryArchive(file)
       logInfo('import', `归档已打开：会话=${archive.refs.length}，附件=${archive.summary.attachments}`)
-      const result = await replaceHistoryProgressively(() =>
-        importArchive(archive, options, onProgress)
-      )
+      const result = await replaceHistoryProgressively(async () => {
+        const imported = await importArchive(archive, options, onProgress)
+        if (imported.imported === 0) {
+          throw new BackupError('backupIncomplete')
+        }
+        return imported
+      })
       logInfo(
         'import',
         `导入完成：会话=${result.imported} 跳过=${result.skipped} 附件=${result.files}`
@@ -105,5 +111,13 @@ export const importHistory = (
 /** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */
 export const clearHistory = (): Promise<void> =>
   enqueueBackup(async () => {
-    await replaceHistory(async () => {})
+    const previous = useChatStore.getState().sessions.length
+    logInfo('storage', '开始清空历史', { sessionCount: previous, source: 'settings' })
+    try {
+      await replaceHistory(async () => {})
+      logInfo('storage', '清空历史完成', { previous, sessionCount: 0 })
+    } catch (error) {
+      db.reportStorageError('clear history')(error)
+      throw error
+    }
   })

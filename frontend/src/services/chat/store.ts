@@ -1,3 +1,4 @@
+import { hasNativeWatermark, inspectStorage, writeStorageWatermark } from './storageWatermark.js'
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
@@ -109,6 +110,7 @@ type ChatState = {
   sessions: SessionSummary[]
   sessionCache: Record<string, Session>
   sessionLoadErrors: Record<string, boolean>
+  storageWarning: boolean
   sessionSaveErrors: Record<string, boolean>
   /** null 表示新对话（欢迎页） */
   activeId: string | null
@@ -126,6 +128,7 @@ export const useChatStore = create<ChatState>(() => ({
   sessions: [],
   sessionCache: {},
   sessionLoadErrors: {},
+  storageWarning: false,
   sessionSaveErrors: {},
   activeId: null,
   messageJump: null,
@@ -230,21 +233,67 @@ const updateReply = (sessionId: string, reply: AssistantMessage) =>
     ),
   }))
 
-const persist = (sessionId: string) => {
-  const session = getSession(sessionId)
-  if (session) {
-    unsavedSessions.add(sessionId)
-    if (deletingSessions.has(sessionId)) {
-      return
+let watermarkRevision = 0
+const refreshWatermark = (action: 'save' | 'delete') => {
+  if (!hasNativeWatermark() || get().storageWarning) {
+    return
+  }
+  const epoch = historyEpoch
+  const revision = ++watermarkRevision
+  void db.countSavedSessions().then((count) => {
+    if (epoch === historyEpoch && revision === watermarkRevision && !get().storageWarning) {
+      writeStorageWatermark(count, db.DB_VERSION, action)
     }
-    const epoch = historyEpoch
-    const files = pendingFiles.get(sessionId)
-    void db
-      .saveSession(session, files)
-      .then(() => {
-        if (epoch !== historyEpoch || !getSession(sessionId)) {
+  }).catch(db.reportStorageError('count saved sessions'))
+}
+
+const saveJobs = new Map<string, symbol>()
+const saveRetryDelays = [200, 600, 1500]
+
+const persist = (sessionId: string) => {
+  if (!getSession(sessionId) || deletingSessions.has(sessionId)) {
+    return
+  }
+  unsavedSessions.add(sessionId)
+  const epoch = historyEpoch
+  const job = Symbol()
+  saveJobs.set(sessionId, job)
+  const isCurrent = () => epoch === historyEpoch && saveJobs.get(sessionId) === job &&
+    !deletingSessions.has(sessionId)
+  void (async () => {
+    try {
+      for (let attempt = 0; isCurrent(); attempt += 1) {
+        const session = getSession(sessionId)
+        if (!session) {
           return
         }
+        const files = pendingFiles.get(sessionId)
+        try {
+          await db.saveSession(session, files)
+        } catch (error) {
+          if (!isCurrent()) {
+            return
+          }
+          const reason = errorSummary(error)
+          const retry = /^(AbortError|QuotaExceededError|UnknownError|InvalidStateError)(:|$)/.test(reason)
+          const delay = retry ? saveRetryDelays[attempt] : undefined
+          logError('storage', delay === undefined ? '会话保存失败' : '会话保存将重试', {
+            action: 'save session', sessionId, attempt: attempt + 1, reason,
+            messageCount: session.messages.length, fileCount: files?.length ?? 0,
+          })
+          if (delay !== undefined) {
+            await new Promise((resolve) => setTimeout(resolve, delay))
+            continue
+          }
+          set((state) => ({
+            sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
+          }))
+          return
+        }
+        if (!isCurrent()) {
+          return
+        }
+        refreshWatermark('save')
         if (pendingFiles.get(sessionId) === files) {
           pendingFiles.delete(sessionId)
         }
@@ -257,16 +306,14 @@ const persist = (sessionId: string) => {
           }))
           trimSessionCache()
         }
-      })
-      .catch((error: unknown) => {
-        db.reportStorageError('save session')(error)
-        if (epoch === historyEpoch && getSession(sessionId)) {
-          set((state) => ({
-            sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
-          }))
-        }
-      })
-  }
+        return
+      }
+    } finally {
+      if (saveJobs.get(sessionId) === job) {
+        saveJobs.delete(sessionId)
+      }
+    }
+  })()
 }
 
 export const retrySaveSessions = () => {
@@ -355,8 +402,23 @@ export const initChat = (): Promise<void> => {
       const summaries = await db.loadSessionSummaries()
       logInfo('boot', `initChat: 读到 ${summaries.length} 条摘要`)
       if (epoch === historyEpoch) {
-        set({ ready: true, sessions: sortSessions(summaries) })
+        const storageWarning = inspectStorage(summaries.length)
+        set({ ready: true, storageWarning, sessions: sortSessions(summaries) })
+        if (!storageWarning && summaries.length > 0) {
+          writeStorageWatermark(summaries.length, db.DB_VERSION, 'save')
+        }
         logInfo('boot', 'initChat: 列表就绪')
+        void (async () => {
+          const storage = globalThis.navigator?.storage
+          const [persisted, estimate] = await Promise.all([
+            storage?.persist?.().catch(() => undefined),
+            storage?.estimate?.().catch(() => undefined),
+          ])
+          logInfo('storage', '启动存储诊断', {
+            persisted, usage: estimate?.usage, quota: estimate?.quota,
+            dbVersion: db.DB_VERSION, sessionCount: summaries.length,
+          })
+        })().catch(db.reportStorageError('storage diagnostics'))
       }
     } catch (error) {
       if (epoch === historyEpoch) {
@@ -463,8 +525,6 @@ type HistoryReplacePlan<T> = {
   write: () => Promise<T>
   /** 写完后从库里读回列表（也可以直接返回写入时的结果） */
   commit: () => Promise<SessionSummary[]>
-  /** 失败时把列表刷新成库里的实际内容：渐进导入会留下已写入的会话，界面要说实话 */
-  resyncOnFailure?: boolean
 }
 
 /** 替换历史对话的公共流程：停生成、等落盘、锁交互，成功后重置内存状态。 */
@@ -493,17 +553,11 @@ const runHistoryReplacement = async <T>(
       summaries = await plan.commit()
     } catch (error) {
       await db.clearStaging().catch(db.reportStorageError('clear unfinished history replacement'))
-      if (plan.resyncOnFailure === true) {
-        const partial = await plan
-          .commit()
-          .catch(db.reportStorageError('reload partially imported history'))
-        if (partial !== null && partial !== undefined) {
-          applyReplacedHistory(partial)
-        }
-      }
       throw error
     }
     applyReplacedHistory(summaries)
+    set({ storageWarning: false })
+    writeStorageWatermark(summaries.length, db.DB_VERSION, summaries.length ? 'import' : 'clear')
     return { result, sessions: summaries }
   } finally {
     set({ importingHistory: false })
@@ -524,28 +578,15 @@ const runHistoryReplacement = async <T>(
  */
 export const replaceHistory = async (write: () => Promise<void>): Promise<number> => {
   const { sessions } = await runHistoryReplacement({
-    write: async () => {
-      await db.clearStaging()
-      await write()
-    },
+    write,
     commit: () => db.commitStaging(),
   })
   return sessions.length
 }
 
-/**
- * 渐进替换：先清空本地数据，再按会话写入（大归档导入走这条）。
- * 中断时已写入的会话保留，界面刷新成实际内容而不是继续显示旧列表。
- */
+/** 大归档边解析边暂存，提交前保留旧库。 */
 export const replaceHistoryProgressively = async <T>(write: () => Promise<T>): Promise<T> => {
-  const { result } = await runHistoryReplacement({
-    write: async () => {
-      await db.beginHistoryReplace()
-      return write()
-    },
-    commit: () => db.loadSessionSummaries(),
-    resyncOnFailure: true,
-  })
+  const { result } = await runHistoryReplacement({ write, commit: db.commitStaging })
   return result
 }
 
@@ -624,6 +665,7 @@ const removeSessionData = async (id: string): Promise<boolean> => {
       return false
     }
     await db.deleteSession(id)
+    refreshWatermark('delete')
     if (epoch !== historyEpoch) {
       return true
     }
