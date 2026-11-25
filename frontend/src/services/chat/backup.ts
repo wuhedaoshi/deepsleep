@@ -1,3 +1,6 @@
+import { exportProviderSnapshot, restoreProviderSnapshot } from '../settings.js'
+import { hasPrivateBackups, latestPrivateBackup, openPrivateBackup, savePrivateBackup } from './privateBackup.js'
+import { ZipArchive, type ZipSource } from './history/zip.js'
 import { formatDate } from '../../utils/format.js'
 import { errorSummary, logError, logInfo } from '../log.js'
 import * as db from './db.js'
@@ -30,6 +33,34 @@ export type ExportOutcome = {
   blob?: Blob
 }
 
+const exportZip = async (
+  name: string,
+  source: import('./history/exportArchive.js').ExportSource
+): Promise<ExportOutcome> => {
+  const { canSaveToDisk, saveArchive } = await import('./history/archiveSink.js')
+  const { exportArchive, exportArchiveTo } = await import('./history/exportArchive.js')
+  if (canSaveToDisk()) {
+    return { name, path: await saveArchive(name, (sink) => exportArchiveTo(source, sink)) }
+  }
+  return { name, blob: await exportArchive(source) }
+}
+
+export const exportProviderBackup = (): Promise<ExportOutcome> =>
+  enqueueBackup(() => exportZip('deepsleep-providers-' + formatDate(new Date()) + '.zip', {
+    sessions: (async function* () {})(),
+    file: async () => undefined,
+    providerSnapshot: exportProviderSnapshot(),
+  }))
+
+export const importProviderBackup = (source: ZipSource): Promise<void> =>
+  enqueueBackup(async () => {
+    const { readProviderSnapshot } = await import('./history/archive.js')
+    const snapshot = await readProviderSnapshot(await ZipArchive.open(source))
+    if (!restoreProviderSnapshot(snapshot)) {
+      throw new BackupError('backupIncomplete')
+    }
+  })
+
 /**
  * 导出为官方格式（v3）的 ZIP。
  *
@@ -55,21 +86,14 @@ export const exportHistory = (): Promise<ExportOutcome> =>
     }
     const source = {
       sessions: readSessions(),
+      providerSnapshot: exportProviderSnapshot(),
       file: (id: string) => db.loadFile(id),
     }
     const name = backupFileName(new Date())
     logInfo('storage', '开始导出历史', { sessionCount: sessions.length })
-    const { canSaveToDisk, saveArchive } = await import('./history/archiveSink.js')
-    if (canSaveToDisk()) {
-      const { exportArchiveTo } = await import('./history/exportArchive.js')
-      const path = await saveArchive(name, (sink) => exportArchiveTo(source, sink))
-      logInfo('storage', '历史导出完成', { sessionCount: sessions.length })
-      return { name, path }
-    }
-    const { exportArchive } = await import('./history/exportArchive.js')
-    const blob = await exportArchive(source)
-    logInfo('storage', '历史导出完成', { sessionCount: sessions.length, bytes: blob.size })
-    return { name, blob }
+    const result = await exportZip(name, source)
+    logInfo('storage', '历史导出完成', { sessionCount: sessions.length, bytes: result.blob?.size })
+    return result
   }).catch((error: unknown) => {
     db.reportStorageError('export history')(error)
     throw error
@@ -77,8 +101,8 @@ export const exportHistory = (): Promise<ExportOutcome> =>
 
 /** 确认覆盖后分批暂存，归档完整处理后再原子替换旧历史。 */
 export const importHistory = (
-  file: File,
-  options: ImportOptions,
+  file: ZipSource,
+  options: ImportOptions & { restoreProviders?: boolean },
   onProgress?: (progress: ImportProgress) => void
 ): Promise<ImportResult> =>
   enqueueBackup(async () => {
@@ -97,6 +121,13 @@ export const importHistory = (
         }
         return imported
       })
+      if (options.restoreProviders) {
+        try {
+          restoreProviderSnapshot(await archive.providerSnapshot())
+        } catch (error) {
+          logError('import', '供应商配置恢复失败', errorSummary(error))
+        }
+      }
       logInfo(
         'import',
         `导入完成：会话=${result.imported} 跳过=${result.skipped} 附件=${result.files}`
@@ -121,3 +152,54 @@ export const clearHistory = (): Promise<void> =>
       throw error
     }
   })
+
+let backupScheduled = false
+let nextBackupCheck = 0
+const DAY_MS = 86_400_000
+
+/** Only committed history enters the private snapshot. */
+export const scheduleAutoBackup = () => {
+  if (!hasPrivateBackups() || backupScheduled || Date.now() < nextBackupCheck) {
+    return
+  }
+  backupScheduled = true
+  void enqueueBackup(async () => {
+    const last = latestPrivateBackup()
+    if (last && Date.now() - last.timestamp < DAY_MS) {
+      nextBackupCheck = last.timestamp + DAY_MS
+      return
+    }
+    const state = useChatStore.getState()
+    if (state.storageWarning || Object.keys(state.streaming).length > 0) {
+      return
+    }
+    nextBackupCheck = Date.now() + 60_000
+    const summaries = await db.loadSessionSummaries()
+    if (!summaries.length) {
+      return
+    }
+    async function* sessions() {
+      for (const info of summaries) {
+        const session = await db.loadSession(info.id)
+        if (!session) {
+          throw new Error('PRIVATE_BACKUP_SESSION_CHANGED')
+        }
+        yield session
+      }
+    }
+    const { exportArchiveTo } = await import('./history/exportArchive.js')
+    await savePrivateBackup((sink) => exportArchiveTo({ sessions: sessions(), file: db.loadFile, localSnapshot: true, providerSnapshot: exportProviderSnapshot() }, sink))
+    nextBackupCheck = Date.now() + DAY_MS
+    logInfo('storage', '自动备份已提交', { count: summaries.length })
+  }).catch(db.reportStorageError('automatic backup')).finally(() => {
+    backupScheduled = false
+  })
+}
+
+export const restorePrivateBackup = async (name?: string): Promise<ImportResult> => {
+  const source = openPrivateBackup(name)
+  if (!source) {
+    throw new Error('PRIVATE_BACKUP_MISSING')
+  }
+  return importHistory(source, { includeAttachments: true, localSnapshot: true, restoreProviders: true })
+}

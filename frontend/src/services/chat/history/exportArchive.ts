@@ -23,6 +23,8 @@ const SLICE = 1 << 20
 
 export type ExportSource = {
   sessions: AsyncIterable<Session>
+  localSnapshot?: boolean
+  providerSnapshot?: unknown
   /** 读附件原件；返回 undefined 表示本地没有原件，导出里就不带这个文件 */
   file: (id: string) => Promise<Blob | undefined>
 }
@@ -595,7 +597,9 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
     }
   }
 
-  await addJson('manifest.json', { export_format_version: FORMAT_VERSION })
+  await addJson('manifest.json', source.localSnapshot
+    ? { export_format_version: 4, sessions_format: 'local-v1' }
+    : { export_format_version: FORMAT_VERSION })
 
   // ZIP32 的硬上限：条目数不能到 65535（留出余量给 manifest 与索引），
   // 单条目与总大小也不能超过 4 GiB。超了 aborted 出来的包是坏的，所以提前拒绝。
@@ -606,7 +610,14 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
 
   const index: Json[] = []
   for await (const session of source.sessions) {
-    const { json, files } = sessionJson(session)
+    const { json, files } = source.localSnapshot
+      ? {
+          json: session,
+          files: session.messages.flatMap((message) => message.role === 'user'
+            ? message.files.map(({ id, name }) => ({ id, path: attachmentEntryPath(session.id, id, name) }))
+            : []),
+        }
+      : sessionJson(session)
     const sessionBytes = JSON.stringify(json).length
     totalBytes += sessionBytes
     if (entryCount + files.length + 2 > MAX_ENTRIES || totalBytes > MAX_TOTAL_BYTES) {
@@ -644,6 +655,9 @@ export const exportArchiveTo = async (source: ExportSource, sink: ChunkSink): Pr
   }
   // 索引最后写：官方与旧版导入器都要求会话 JSON 早于它。
   await addJson('chat_session_index.json', index)
+  if (source.providerSnapshot) {
+    await addJson('deepsleep-provider-settings.json', source.providerSnapshot)
+  }
   zip.end()
   await check()
 }

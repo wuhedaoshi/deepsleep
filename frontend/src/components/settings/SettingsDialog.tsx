@@ -1,3 +1,5 @@
+import { hasPrivateBackups, listPrivateBackups, PRIVATE_BACKUPS_CHANGED } from '../../services/chat/privateBackup.js'
+import { restorePrivateBackup } from '../../services/chat/backup.js'
 import { connectionFor } from '../../services/api/connections.js'
 import clsx from 'clsx'
 import { presetProviderNames, ProviderSettings } from './ProviderSettings.js'
@@ -135,6 +137,7 @@ const SettingsContent = () => {
                 <ImportProgressBar progress={historyImport.progress} />
               ) : null}
               <ExportHistory disabled={historyBusy} />
+              <PrivateBackupSetting disabled={historyBusy} />
               <SettingCell
                 label={t('deleteAllSessions')}
                 status={null}
@@ -763,6 +766,84 @@ const errorStatus = (key: TranslationKey, error: unknown): Status => ({
   error: true,
 })
 
+const PrivateBackupSetting = ({ disabled }: { disabled: boolean }) => {
+  const t = useTranslate()
+  const [restoring, setRestoring] = useState(false)
+  const [backups, setBackups] = useState(listPrivateBackups)
+  const [selection, setSelection] = useState('')
+  const [confirmation, setConfirmation] = useState<(typeof backups)[number]>()
+  useEffect(() => {
+    const update = () => setBackups(listPrivateBackups())
+    window.addEventListener(PRIVATE_BACKUPS_CHANGED, update)
+    return () => window.removeEventListener(PRIVATE_BACKUPS_CHANGED, update)
+  }, [])
+  if (!hasPrivateBackups()) {
+    return null
+  }
+  const selected = backups.find(({ name }) => name === selection) ?? backups[0]
+  return (
+    <>
+      <SettingCell
+        label={t('privateBackupLabel')}
+        description={selected ? (
+          <Select
+            value={selected.name}
+            ariaLabel={t('privateBackupLabel')}
+            onChange={setSelection}
+            options={backups.map(({ name, timestamp }) => ({
+              value: name,
+              label: new Date(timestamp).toLocaleString(),
+            }))}
+          />
+        ) : t('privateBackupNone')}
+        status={null}
+        action={
+          <Button
+            variant="outlined"
+            size="m"
+            disabled={disabled || restoring || !selected}
+            onClick={() => setConfirmation(selected)}
+          >
+            {t('privateBackupRestore')}
+          </Button>
+        }
+      />
+      {confirmation && (
+        <Modal
+          title={t('privateBackupRestore')}
+          className={styles.importConfirm}
+          onClose={() => setConfirmation(undefined)}
+          footer={
+            <>
+              <Button variant="outlined" size="m" autoFocus onClick={() => setConfirmation(undefined)}>
+                {t('cancel')}
+              </Button>
+              <Button
+                variant="dangerOutlined"
+                size="m"
+                onClick={() => {
+                  setConfirmation(undefined)
+                  setRestoring(true)
+                  void restorePrivateBackup(confirmation.name).then(
+                    () => showToast({ key: 'privateBackupRestored' }),
+                    () => showToast({ key: 'privateBackupFailed' })
+                  ).finally(() => setRestoring(false))
+                }}
+              >
+                {t('privateBackupRestore')}
+              </Button>
+            </>
+          }
+        >
+          <div className={styles.importConfirmText}>
+            {t('privateBackupConfirm', { date: new Date(confirmation.timestamp).toLocaleString() })}
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
 const SettingCell = ({
   label,
   description,
@@ -819,7 +900,7 @@ const useHistoryImport = () => {
     setBusy(true)
     setStatus(null)
     try {
-      const result = await importHistory(file, { includeAttachments }, setProgress)
+      const result = await importHistory(file, { includeAttachments, restoreProviders: true }, setProgress)
       setStatus(
         result.skipped > 0
           ? {

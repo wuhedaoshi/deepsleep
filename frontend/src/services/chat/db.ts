@@ -1,9 +1,11 @@
+import { createId } from '../../utils/id.js'
+import { hasPrivateBackups, savePrivateBackup } from './privateBackup.js'
 import { errorSummary, logError, logInfo } from '../log.js'
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import { toSessionSummary, type Session, type SessionSummary } from './types.js'
+import { toSessionSummary, type Message, type Session, type SessionSummary } from './types.js'
 
 /** IndexedDB 存储结构版本；新增或调整存储、索引时递增。 */
-export const DB_VERSION = 11
+export const DB_VERSION = 12
 
 /** 文件原件按附件的本地 id 存储，所有引用同一 id 的消息共用一份；用于缩略图、打开查看，以及没有 serverId 时补传。 */
 export type StoredFile = {
@@ -12,11 +14,20 @@ export type StoredFile = {
 }
 
 /** 文件引用留在摘要中，删除会话时通过索引判断原件是否仍被引用。 */
+type SessionRecord = Omit<Session, 'messages'> & { messages?: Message[]; revision?: string }
+const sessionMetadata = (session: Session): SessionRecord => {
+  const record: SessionRecord = { ...session }
+  delete record.messages
+  return record
+}
+type MessageRecord = { sessionId: string; position: number; message: Message }
+
 type StoredSessionSummary = SessionSummary & { fileIds: string[] }
 
 interface ChatDB extends DBSchema {
   /** 当前使用的会话，界面读写都在这里 */
-  sessions: { key: string; value: Session }
+  sessions: { key: string; value: SessionRecord }
+  messages: { key: [string, number]; value: MessageRecord }
   sessionSummaries: {
     key: string
     value: StoredSessionSummary
@@ -53,11 +64,86 @@ const abortTransaction = (tx: { abort(): void }) => {
   }
 }
 
-// 每个操作拿到连接后立即创建事务；IndexedDB 按创建顺序执行范围重叠的事务，读取总能看到之前发起的写入。
+const messageRange = (id: string) => IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER])
+
+// Only reuse cached message references if the transaction sees the same committed revision.
+const writtenMessages = new Map<string, { revision: string; messages: Message[] }>()
+const writeMessages = async (
+  target: { delete(key: IDBKeyRange): Promise<void>; put(record: MessageRecord): Promise<unknown> },
+  session: Session,
+  previous?: Message[]
+) => {
+  if (!previous) {
+    await target.delete(messageRange(session.id))
+  }
+  for (let position = 0; position < session.messages.length; position += 1) {
+    const message = session.messages[position]
+    if (previous?.[position] !== message) {
+      await target.put({ sessionId: session.id, position, message })
+    }
+  }
+  if (previous && previous.length > session.messages.length) {
+    await target.delete(IDBKeyRange.bound([session.id, session.messages.length], [session.id, previous.length]))
+  }
+}
+
+const backUpBeforeUpgrade = async () => {
+  if (!hasPrivateBackups()) {
+    return
+  }
+  let missing = false
+  const existing = await openDB<ChatDB>('deepsleep', undefined, {
+    upgrade(_db, _oldVersion, _version, tx) {
+      missing = true
+      void tx.done.catch(() => {})
+      tx.abort()
+    },
+  }).catch((error: unknown) => {
+    if (!missing) {
+      throw error
+    }
+    return undefined
+  })
+  if (!existing) {
+    return
+  }
+  const legacy = existing
+  const version = legacy.version
+  try {
+    if (version >= DB_VERSION) {
+      return
+    }
+    if (!legacy.objectStoreNames.contains('sessions') || !(await legacy.count('sessions'))) {
+      return
+    }
+    const ids = await legacy.getAllKeys('sessions')
+    const sessions = async function* () {
+      for (const id of ids) {
+        const value = await legacy.get('sessions', id)
+        if (!value?.messages) {
+          throw new Error('MIGRATION_BACKUP_SESSION_MISSING')
+        }
+        yield { ...value, messages: value.messages }
+      }
+    }
+    const [{ exportArchiveTo }, { exportProviderSnapshot }] = await Promise.all([
+      import('./history/exportArchive.js'), import('../settings.js'),
+    ])
+    const file = async (id: string) => (await legacy.get('files', id))?.blob
+    await savePrivateBackup((sink) => exportArchiveTo({
+      sessions: sessions(), file, localSnapshot: true, providerSnapshot: exportProviderSnapshot(),
+    }, sink))
+    logInfo('storage', '消息表迁移前快照已提交', { sessionCount: ids.length, version })
+  } finally {
+    legacy.close()
+  }
+}
+
 const getDB = () =>
-  (dbPromise ??= openDB<ChatDB>('deepsleep', DB_VERSION, {
-    upgrade(db, _oldVersion, _newVersion, tx) {
-      // 初始化当前格式需要的存储与索引，不迁移旧消息。
+  (dbPromise ??= backUpBeforeUpgrade().then(() => openDB<ChatDB>('deepsleep', DB_VERSION, {
+    upgrade(db, oldVersion, _newVersion, tx) {
+      // The open request reports an aborted upgrade; consume the transaction rejection too.
+      void tx.done.catch(() => {})
       for (const name of ['sessions', 'files', 'sessionsStaging', 'filesStaging'] as const) {
         if (!db.objectStoreNames.contains(name)) {
           db.createObjectStore(name, { keyPath: 'id' })
@@ -69,9 +155,32 @@ const getDB = () =>
       if (!summaries.indexNames.contains('fileIds')) {
         summaries.createIndex('fileIds', 'fileIds', { multiEntry: true })
       }
+      if (oldVersion < 12) {
+        const messages = db.createObjectStore('messages', { keyPath: ['sessionId', 'position'] })
+        if (oldVersion !== 0) {
+          void (async () => {
+            for (let cursor = await tx.objectStore('sessions').openCursor(); cursor; cursor = await cursor.continue()) {
+              const { messages: original, ...meta } = cursor.value
+              if (!Array.isArray(original)) {
+                throw new Error('MIGRATION_INVALID_SESSION')
+              }
+              for (let position = 0; position < original.length; position += 1) {
+                await messages.put({ sessionId: meta.id, position, message: original[position] })
+              }
+              await cursor.update(meta)
+            }
+          })().catch(() => abortTransaction(tx))
+        }
+      }
     },
-  }).catch((error: unknown) => {
-    // 打开失败后允许界面重试，避免一直复用已拒绝的 Promise。
+    blocking(_currentVersion, _blockedVersion, event) {
+      const connection = event.target
+      if (connection instanceof IDBDatabase) {
+        connection.close()
+        dbPromise = null
+      }
+    },
+  })).catch((error: unknown) => {
     dbPromise = null
     throw error
   }))
@@ -84,7 +193,7 @@ export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
   if (available.length > 0) {
     return available.map(toSessionSummary)
   }
-  const tx = db.transaction(['sessionSummaries', 'sessions'], 'readwrite')
+  const tx = db.transaction(['sessionSummaries', 'sessions', 'messages'], 'readwrite')
   const restored = await Promise.all([
     (async () => {
       const summaries = tx.objectStore('sessionSummaries')
@@ -95,7 +204,8 @@ export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
         }
         const rebuilt: StoredSessionSummary[] = []
         for (let cursor = await tx.objectStore('sessions').openCursor(); cursor; cursor = await cursor.continue()) {
-          const summary = storedSummary(cursor.value)
+          const rows = await tx.objectStore('messages').getAll(messageRange(cursor.value.id))
+          const summary = storedSummary({ ...cursor.value, messages: rows.map(({ message }) => message) })
           await summaries.put(summary)
           rebuilt.push(summary)
         }
@@ -113,19 +223,38 @@ export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
   return restored[0].map(toSessionSummary)
 }
 
-export const loadSession = async (id: string): Promise<Session | undefined> =>
-  (await getDB()).get('sessions', id)
+export const loadSession = async (id: string): Promise<Session | undefined> => {
+  const tx = (await getDB()).transaction(['sessions', 'messages'])
+  const [session, rows] = await Promise.all([
+    tx.objectStore('sessions').get(id),
+    tx.objectStore('messages').getAll(messageRange(id)),
+    tx.done,
+  ])
+  if (!session) {
+    return undefined
+  }
+  const meta = { ...session }
+  delete meta.revision
+  return { ...meta, messages: rows.map(({ message }) => message) }
+}
 
 export const saveSession = async (session: Session, files: StoredFile[] = []): Promise<void> => {
   const summary = storedSummary(session)
-  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries', 'files'], 'readwrite')
+  const db = await getDB()
+  const revision = createId()
+  const tx = db.transaction(['sessions', 'sessionSummaries', 'files', 'messages'], 'readwrite')
   await Promise.all([
     (async () => {
       try {
+        const sessions = tx.objectStore('sessions')
+        const prior = await sessions.get(session.id)
+        const cached = writtenMessages.get(session.id)
+        const previous = cached && cached.revision === prior?.revision ? cached.messages : undefined
         for (const file of files) {
           await tx.objectStore('files').put(file)
         }
-        await tx.objectStore('sessions').put(session)
+        await writeMessages(tx.objectStore('messages'), session, previous)
+        await sessions.put({ ...sessionMetadata(session), revision })
         await tx.objectStore('sessionSummaries').put(summary)
       } catch (error) {
         abortTransaction(tx)
@@ -134,6 +263,13 @@ export const saveSession = async (session: Session, files: StoredFile[] = []): P
     })(),
     tx.done,
   ])
+  writtenMessages.set(session.id, { revision, messages: session.messages })
+  if (writtenMessages.size > 16) {
+    const oldest = writtenMessages.keys().next().value
+    if (oldest !== undefined) {
+      writtenMessages.delete(oldest)
+    }
+  }
 }
 
 /** 未打开的会话也可重命名，只读取该会话，原子更新详情和列表。 */
@@ -147,7 +283,10 @@ export const renameSession = async (id: string, title: string): Promise<void> =>
         if (session) {
           session.title = title
           await sessions.put(session)
-          await tx.objectStore('sessionSummaries').put(storedSummary(session))
+          const summary = await tx.objectStore('sessionSummaries').get(id)
+          if (summary) {
+            await tx.objectStore('sessionSummaries').put({ ...summary, title })
+          }
         }
       } catch (error) {
         abortTransaction(tx)
@@ -160,13 +299,14 @@ export const renameSession = async (id: string, title: string): Promise<void> =>
 
 /** 删除会话，仅清理已无会话引用的本地原件；远端文件不删。 */
 export const deleteSession = async (sessionId: string): Promise<void> => {
-  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries', 'files'], 'readwrite')
+  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries', 'files', 'messages'], 'readwrite')
   await Promise.all([
     (async () => {
       try {
         const summaries = tx.objectStore('sessionSummaries')
         const summary = await summaries.get(sessionId)
         await tx.objectStore('sessions').delete(sessionId)
+        await tx.objectStore('messages').delete(messageRange(sessionId))
         await summaries.delete(sessionId)
         for (const id of summary?.fileIds ?? []) {
           if ((await summaries.index('fileIds').count(id)) === 0) {
@@ -180,6 +320,7 @@ export const deleteSession = async (sessionId: string): Promise<void> => {
     })(),
     tx.done,
   ])
+  writtenMessages.delete(sessionId)
 }
 
 const putFiles = async (store: 'files' | 'filesStaging', files: StoredFile[]) => {
@@ -217,7 +358,7 @@ export const commitStaging = async (): Promise<SessionSummary[]> => {
   logInfo('storage', '开始提交历史暂存')
   const summaries: SessionSummary[] = []
   const tx = (await getDB()).transaction(
-    ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging'],
+    ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging', 'messages'],
     'readwrite'
   )
   const move = async (from: 'sessionsStaging' | 'filesStaging', to: 'sessions' | 'files') => {
@@ -226,17 +367,22 @@ export const commitStaging = async (): Promise<SessionSummary[]> => {
       await target.clear()
       if (to === 'sessions') {
         await tx.objectStore('sessionSummaries').clear()
+        await tx.objectStore('messages').clear()
       }
       for (
         let cursor = await tx.objectStore(from).openCursor();
         cursor;
         cursor = await cursor.continue()
       ) {
-        await target.put(cursor.value)
         if (to === 'sessions') {
-          const summary = storedSummary(cursor.value as Session)
+          const session = cursor.value as Session
+          await tx.objectStore('sessions').put(sessionMetadata(session))
+          await writeMessages(tx.objectStore('messages'), session)
+          const summary = storedSummary(session)
           await tx.objectStore('sessionSummaries').put(summary)
           summaries.push(toSessionSummary(summary))
+        } else {
+          await tx.objectStore('files').put(cursor.value as StoredFile)
         }
       }
       await tx.objectStore(from).clear()
@@ -248,6 +394,7 @@ export const commitStaging = async (): Promise<SessionSummary[]> => {
   }
   await Promise.all([move('sessionsStaging', 'sessions'), move('filesStaging', 'files'), tx.done])
   // 直接返回本次提交的列表，调用方无需在替换成功后再发起可能失败的读取。
+  writtenMessages.clear()
   logInfo('storage', '历史暂存已提交', { sessions: summaries.length })
   return summaries
 }

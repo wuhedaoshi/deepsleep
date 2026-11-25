@@ -1,3 +1,4 @@
+import { exportProviderBackup, importProviderBackup } from '../../services/chat/backup.js'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 import {
@@ -371,7 +372,70 @@ export const ProviderSettings = () => {
           <ServiceRow key={service} service={service} catalogs={catalogs} loadSaved={loadSaved} />
         ))}
       </div>
+      <ProviderBackup />
     </section>
+  )
+}
+
+const ProviderBackup = () => {
+  const t = useTranslate()
+  const input = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<TranslationKey>()
+  const run = async (file?: File) => {
+    setBusy(true)
+    setResult(undefined)
+    try {
+      if (file) {
+        await importProviderBackup(file)
+        setResult('providerBackupImported')
+        return
+      }
+      const outcome = await exportProviderBackup()
+      if (outcome.blob) {
+        const url = URL.createObjectURL(outcome.blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = outcome.name
+        link.click()
+        setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      }
+      setResult('providerBackupExported')
+    } catch {
+      setResult('providerBackupFailed')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className={styles.card}>
+      <div className={styles.heading}><h4>{t('providerBackupTitle')}</h4></div>
+      <div className={styles.cardForm}>
+        <p>{t('providerBackupDescription')}</p>
+        <div className={styles.actions}>
+          <Button size="m" variant="outlined" disabled={busy} onClick={() => void run()}>
+            {t('providerBackupExport')}
+          </Button>
+          <Button size="m" variant="outlined" disabled={busy} onClick={() => input.current?.click()}>
+            {t('providerBackupImport')}
+          </Button>
+        </div>
+        <input
+          ref={input}
+          hidden
+          type="file"
+          accept=".zip,application/zip"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ''
+            if (file) {
+              void run(file)
+            }
+          }}
+        />
+        {result && <p role="status">{t(result)}</p>}
+      </div>
+    </div>
   )
 }
 

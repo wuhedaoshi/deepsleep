@@ -10,7 +10,7 @@
 /** `Blob` 的最小可用子集；单测可以换成基于文件的实现。 */
 export type ZipSource = {
   readonly size: number
-  slice(start: number, end: number): Blob
+  slice(start: number, end: number): Pick<Blob, 'arrayBuffer'>
   /**
    * 直接切出一段 Blob，不经过 JS 堆。`File` / `Blob` 天然支持；
    * 文件系统来源没有这个能力，此时退回「读字节 → new Blob」。
@@ -252,6 +252,22 @@ export class ZipArchive {
    * store（不压缩）条目直接切成 Blob：图片都是 method 0，这样 300 MB 原件不必经过 JS 堆。
    * 来源不支持 `sliceBlob` 或条目是 deflate 时返回 `undefined`，由调用方退回读字节。
    */
+  async verifiedBlob(name: string, type: string): Promise<Blob> {
+    const entry = this.require(name)
+    const parts: Blob[] = []
+    let checksum = 0xffffffff
+    let size = 0
+    for await (const chunk of this.stream(name)) {
+      checksum = crc32([chunk], checksum)
+      size += chunk.byteLength
+      parts.push(new Blob([chunk]))
+    }
+    if (size !== entry.size || (checksum ^ 0xffffffff) >>> 0 !== entry.crc32) {
+      throw new ZipError('corrupt', name)
+    }
+    return new Blob(parts, { type })
+  }
+
   async storedBlob(name: string, type: string): Promise<Blob | undefined> {
     const entry = this.require(name)
     const sliceBlob = this.source.sliceBlob

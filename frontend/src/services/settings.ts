@@ -366,3 +366,57 @@ export const setApiMode = (apiMode: ApiMode) => {
   write(KEYS.apiMode, apiMode)
   useSettings.setState({ apiMode })
 }
+
+/** Credentials are never placed in the chat archive. */
+export const exportProviderSnapshot = () => {
+  const { customProviders, connections } = useSettings.getState()
+  return {
+    version: 1,
+    providers: customProviders.map(({ id, name, kind, base }) => ({ id, name, kind, base })),
+    assignments: Object.fromEntries(services.flatMap((service) => {
+      const entry = connections[service]
+      if (!entry) {
+        return []
+      }
+      const { provider, base, model, profileId, protocol, effort, contextWindow, maxOutput } = entry
+      return [[service, { provider, base, model, profileId, protocol, effort, contextWindow, maxOutput }]]
+    })),
+  }
+}
+
+export const restoreProviderSnapshot = (snapshot: unknown) => {
+  if (typeof snapshot !== 'object' || !snapshot || !('version' in snapshot) || snapshot.version !== 1) {
+    return false
+  }
+  if (!('assignments' in snapshot) || !snapshot.assignments || typeof snapshot.assignments !== 'object') {
+    return false
+  }
+  const current = useSettings.getState()
+  if ('providers' in snapshot && Array.isArray(snapshot.providers)) {
+    for (const entry of snapshot.providers.slice(0, 100)) {
+      if (!entry || typeof entry !== 'object') {
+        continue
+      }
+      // A backup may supply a missing profile but must not redirect an existing credential.
+      if (!current.customProviders.some((saved) => saved.id === entry.id)) {
+        saveCustomProvider({ id: entry.id, name: entry.name, kind: entry.kind, base: entry.base, key: '' })
+      }
+    }
+  }
+  const entries = snapshot.assignments as Partial<Record<Service, Connection>>
+  for (const service of services) {
+    const entry = entries[service]
+    if (!entry || current.connections[service]) {
+      continue
+    }
+    if (entry.provider === 'custom') {
+      // Review a restored custom profile and deliberately assign it before sending chats.
+      continue
+    }
+    const key = current.providerKeys[entry.provider]
+    if (key) {
+      setConnection(service, { ...entry, key })
+    }
+  }
+  return true
+}

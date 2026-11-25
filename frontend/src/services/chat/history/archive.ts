@@ -295,17 +295,32 @@ export class HistoryArchive {
   }
 
   /** 会话正文 → 本地 `Session`。 */
-  async sessionOf(ref: ArchiveRef) {
+  async sessionOf(ref: ArchiveRef, localSnapshot = false) {
     const raw = await this.readSession(ref)
     // 先按 export_path 绑定附件 id，再转换：mimeTypeOf(fileId) 依赖这次绑定
     this.bindFiles(ref.id, raw)
-    return sessionFromArchive(raw, this.summary.format, this.mimeTypeOf(ref.id))
+    const session = sessionFromArchive(raw, this.summary.format, this.mimeTypeOf(ref.id))
+    if (localSnapshot) {
+      if (this.summary.format !== 'local' || session.id !== ref.id) {
+        throw new BackupError('backupIncomplete')
+      }
+      // Native snapshots were produced from our own database. Preserve local fields and message IDs.
+      return raw as typeof session
+    }
+    return session
   }
 
-  /** 附件原件；缺失或损坏（解压失败）时返回 `undefined`，不打断整包导入。 */
-  async attachmentBlob(attachment: ArchiveAttachment): Promise<Blob | undefined> {
+  providerSnapshot(): Promise<unknown> {
+    return readProviderSnapshot(this.zip)
+  }
+
+  /** 附件原件；缺失或损坏（解压失败）时返回 undefined。 */
+  async attachmentBlob(attachment: ArchiveAttachment, verify = false): Promise<Blob | undefined> {
     try {
       // 图片在归档里是 store 条目：直接切 Blob，302 MB 原件不进 JS 堆。
+      if (verify) {
+        return await this.zip.verifiedBlob(attachment.path, attachment.mimeType)
+      }
       const stored = await this.zip.storedBlob(attachment.path, attachment.mimeType)
       if (stored !== undefined) {
         return stored
@@ -495,4 +510,19 @@ export const openHistoryArchive = async (source: ZipSource): Promise<HistoryArch
     scan.attachments,
     scan.bySession
   )
+}
+
+
+/** Read only the allowlisted configuration entry when importing a provider backup. */
+export const readProviderSnapshot = async (zip: ZipArchive): Promise<unknown> => {
+  const name = 'deepsleep-provider-settings.json'
+  const entry = zip.entry(name)
+  if (!entry || entry.size > 256 * 1024) {
+    return undefined
+  }
+  try {
+    return decodeJson(await zip.read(name))
+  } catch {
+    return undefined
+  }
 }
