@@ -12,7 +12,8 @@
 [CmdletBinding()]
 param(
     # 只走流程不落地：不写版本文件、不同步 assets、不调 gradle、不导出
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$KeepVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +59,7 @@ if ($parts.Count -lt 3) { throw "versionName 需要三段式 x.y.z，实际：$n
 $major = [int]$parts[0]
 $minor = [int]$parts[1]
 $patch = [int]$parts[2] + 1
-$newName = "$major.$minor.$patch"
+$newName = if ($KeepVersion) { $name } else { "$major.$minor.$patch" }
 $newCode = $code + 1
 
 if ($DryRun) {

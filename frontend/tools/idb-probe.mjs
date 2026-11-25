@@ -25,13 +25,14 @@ if (refs.length === 0) {
 const expected = refs.reduce((sum, ref) => sum + ref.images.length, 0)
 console.log(`样例：${refs.length} 个会话、${expected} 张图片`)
 
-await db.beginHistoryReplace()
+await db.clearStaging()
 const result = await importArchive(
   { ...archive, refs },
   { putSession: (session, files) => db.putHistorySession(session, files) },
   { includeAttachments: true }
 )
 
+await db.commitStaging()
 const sample = refs[0].images[0]
 const stored = await db.loadFile(sample.id)
 const pruned = await db.pruneOrphanFiles()

@@ -553,6 +553,22 @@ public class MainActivity extends Activity {
         // ——导入 364 MB 归档之后内存压力一大就复现，导出正好撞上。
         nativeBridge = new Object() {
             @JavascriptInterface
+            public String readStorageWatermark() {
+                return getSharedPreferences("storage-health", MODE_PRIVATE).getString("watermark", "");
+            }
+
+            @JavascriptInterface
+            public void writeStorageWatermark(int count, int version, String action) {
+                if (count < 0 || version < 1 || action == null || !action.matches("save|delete|clear|import")) {
+                    return;
+                }
+                String value = "{\"count\":" + count + ",\"dbVersion\":" + version
+                        + ",\"port\":" + PORT + ",\"lastSavedAt\":" + System.currentTimeMillis()
+                        + ",\"action\":\"" + action + "\"}";
+                getSharedPreferences("storage-health", MODE_PRIVATE).edit().putString("watermark", value).apply();
+            }
+
+            @JavascriptInterface
             public boolean hasNativePicker() {
                 return true;
             }
