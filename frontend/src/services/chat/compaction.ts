@@ -1,3 +1,4 @@
+import { logInfo } from '../log.js'
 /**
  * 上下文压缩：会话接近模型窗口时，把较早的若干轮换成一份结构化 checkpoint，近期轮次仍逐字发送。
  *
@@ -543,6 +544,7 @@ export const compactSession = async (
     previous: context.previous,
   }
   const stop = signal ?? new AbortController().signal
+  const startedAt = Date.now()
   let summary: string
   for (let retry = 0; ; retry += 1) {
     try {
@@ -583,6 +585,11 @@ export const compactSession = async (
   if (savedTokens <= 0) {
     throw new CompactionError('not-shrinking', '摘要没有比被替换的历史更短')
   }
+  logInfo('compaction', '上下文摘要完成', {
+    sessionId: session.id, urgent: options.urgent === true, originalRounds: rounds.length,
+    summarizedRounds: range.rounds.length, retainedRounds: rounds.length - range.rounds.length,
+    savedTokens, elapsedMs: Date.now() - startedAt,
+  })
   return { summary, upToMessageId: range.upToMessageId, savedTokens, lastRoundId: rounds[rounds.length - 1][1].id }
 }
 

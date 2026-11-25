@@ -1,3 +1,4 @@
+import { logInfo } from '../log.js'
 import { ApiError, readBodyText, request } from './client.js'
 import { bearer, openCodeProtocol, siliconFlowEfforts, type Connection } from './connections.js'
 import { readMessageEvent } from './parseEvent.js'
@@ -61,6 +62,7 @@ export async function* streamCompatibleChat(
           ? '/api/opencode/chat'
           : connection.base + '/chat/completions'
   const effort = connection.effort
+  logInfo('chat', '兼容聊天请求路由', { provider: connection.provider, protocol, effort })
   const requestBody =
     protocol === 'responses'
       ? {

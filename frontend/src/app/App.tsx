@@ -1,3 +1,4 @@
+import { openSettings } from '../components/settings/settingsDialogState.js'
 import clsx from 'clsx'
 import { useEffect } from 'react'
 import { useTranslate } from '../i18n/index.js'
@@ -39,6 +40,7 @@ export const App = () => {
   const siderOpen = useMobileSider((state) => state.open)
   const ready = useChatStore((state) => state.ready)
   const initError = useChatStore((state) => state.initError)
+  const storageWarning = useChatStore((state) => state.storageWarning)
   const saveError = useChatStore((state) => Object.values(state.sessionSaveErrors).some(Boolean))
   const importingHistory = useChatStore((state) => state.importingHistory)
   const session = useChatStore((state) =>
@@ -121,6 +123,15 @@ export const App = () => {
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={clsx(styles.main, isMobile && siderOpen && styles.mainPushed)} data-ds-main>
+          {storageWarning && (
+            <aside className={styles.storageWarning} role="status">
+              <span>{t('storageWarning')}</span>
+              <Button variant="outlined" size="s" onClick={() => openSettings('data')}>
+                {t('storageRecoveryAction')}
+              </Button>
+            </aside>
+          )}
+
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>
@@ -130,7 +141,7 @@ export const App = () => {
                 disabled={importingHistory}
                 onClick={retrySaveSessions}
               >
-                {t('retry')}
+                {t('storageRetrySave')}
               </Button>
             </div>
           ) : null}
@@ -157,7 +168,7 @@ export const App = () => {
                         }
                       }}
                     >
-                      {t('retry')}
+                      {t('storageRetryRead')}
                     </Button>
                   ) : null}
                 </div>

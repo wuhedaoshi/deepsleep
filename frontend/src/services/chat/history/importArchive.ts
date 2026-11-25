@@ -1,9 +1,4 @@
-/**
- * 导入的存储接线：把编排层需要的「写一个会话」直接落到 IndexedDB。
- *
- * 没有暂存库、也没有最后的整体拷贝：会话与原件随解析进度写入，
- * 中断后已经写进去的会话在库里可用，下次导入带上 `done` 就只补没写的。
- */
+/** 按会话解析归档并写入暂存；发布提交由备份流程负责。 */
 import * as db from '../db.js'
 import { runImport, type ImportOptions, type ImportProgress, type ImportResult } from './importPipeline.js'
 import type { HistoryArchive } from './archive.js'

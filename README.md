@@ -11,6 +11,15 @@
 
 ## 下载
 
+| 发布线 | 最新存储修复版 |
+|---|---|
+| 稳定线 | [1.2.22](https://github.com/wuhedaoshi/deepsleep/releases/tag/v1.2.22) |
+| 压缩实验线 | [1.3.22 存储修复版](https://github.com/wuhedaoshi/deepsleep/releases/tag/v1.3.22-storage) |
+| 进阶实验线 | [1.3.28](https://github.com/wuhedaoshi/deepsleep/releases/tag/v1.3.28) |
+
+新版会在正文仍在时重建空白会话列表。遇到本地保存失败，请点「重试保存」再退出。若本机正文已不存在，恢复仍需要已有备份。
+
+
 | 版本 | 适合谁 | 下载与源码 |
 |---|---|---|
 | **稳定版 1.2.21** | 首次安装和日常使用。支持消息搜索直达、导入导出和本地历史。 | [最终 APK](https://github.com/wuhedaoshi/deepsleep/releases/download/v1.2.21/Deepsleep-1.2.21-final.apk) · [最终源码](https://github.com/wuhedaoshi/deepsleep/tree/v1.2.21-final) |
