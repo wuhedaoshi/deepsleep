@@ -89,6 +89,7 @@ export type AssistantMessage = MessageBranch & {
   requestPreferences?: {
     apiMode?: ApiMode
     externalModel?: string
+    externalProvider?: string
     system: string
     effort: ThinkingEffort
     safetyLevel: SafetyLevel

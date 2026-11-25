@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { normalizeConnection, services, type Connection, type Connections, type Service } from './api/connections.js'
+import { normalizeConnection, normalizeCustomProvider, type CustomProvider, services, type Connection, type Connections, type Service } from './api/connections.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
   type ApiMode,
@@ -20,6 +20,8 @@ export type PromptPreset = { id: string; name: string; text: string }
 
 type Settings = {
   connections: Connections
+  providerKeys: Record<string, string>
+  customProviders: CustomProvider[]
   model: ChatModel
   apiMode: ApiMode
   thinkingEffort: ThinkingEffort
@@ -42,6 +44,8 @@ type Settings = {
 
 const KEYS = {
   connections: 'deepsleep:service-connections',
+  providerKeys: 'deepsleep:provider-keys',
+  customProviders: 'deepsleep:custom-providers',
   apiKey: 'deepsleep:api-key',
   model: 'deepsleep:model',
   apiMode: 'deepsleep:api-mode',
@@ -80,6 +84,26 @@ const write = (key: string, value: string | null) => {
 }
 
 /** 位置选择模式跟随浏览器语言，与应用内选择的界面语言无关。 */
+const readCustomProviders = (): CustomProvider[] => {
+  try {
+    const stored = JSON.parse(read(KEYS.customProviders) ?? '[]')
+    return Array.isArray(stored) ? stored.map(normalizeCustomProvider).filter((item): item is CustomProvider => item !== null) : []
+  } catch {
+    return []
+  }
+}
+
+const readProviderKeys = (): Record<string, string> => {
+  try {
+    const stored = JSON.parse(read(KEYS.providerKeys) ?? '{}')
+    return Object.fromEntries(['opencode', 'siliconflow', 'tavily'].flatMap((id) =>
+      typeof stored?.[id] === 'string' ? [[id, stored[id]]] : []
+    ))
+  } catch {
+    return {}
+  }
+}
+
 const readConnections = (): Connections => {
   try {
     const saved = JSON.parse(read(KEYS.connections) ?? '{}')
@@ -171,6 +195,8 @@ const initialEffort = (): ThinkingEffort => {
 
 export const useSettings = create<Settings>(() => ({
   connections: readConnections(),
+  providerKeys: readProviderKeys(),
+  customProviders: readCustomProviders(),
   apiKey: read(KEYS.apiKey),
   apiMode: read(KEYS.apiMode) === 'standard' ? 'standard' : 'extended',
   model: read(KEYS.model) === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
@@ -207,6 +233,35 @@ export const setThemePreference = (themePreference: ThemePreference) => {
 export const setTtsVoice = (ttsVoice: TtsVoice) => {
   write(KEYS.ttsVoice, ttsVoice)
   useSettings.setState({ ttsVoice })
+}
+
+export const setProviderKey = (provider: 'opencode' | 'siliconflow' | 'tavily', key: string) => {
+  const state = useSettings.getState()
+  const providerKeys = { ...state.providerKeys, [provider]: key }
+  write(KEYS.providerKeys, JSON.stringify(providerKeys))
+  useSettings.setState({ providerKeys })
+}
+
+export const saveCustomProvider = (value: CustomProvider) => {
+  const provider = normalizeCustomProvider(value)
+  if (!provider) {
+    return false
+  }
+  const previous = useSettings.getState().customProviders
+  const customProviders = previous.some((item) => item.id === provider.id)
+    ? previous.map((item) => item.id === provider.id ? provider : item)
+    : [...previous, provider]
+  write(KEYS.customProviders, JSON.stringify(customProviders))
+  const connections = { ...useSettings.getState().connections }
+  for (const service of services) {
+    const connection = connections[service]
+    if (connection?.profileId === provider.id) {
+      connections[service] = { ...connection, base: provider.base, key: provider.key }
+    }
+  }
+  write(KEYS.connections, JSON.stringify(connections))
+  useSettings.setState({ customProviders, connections })
+  return true
 }
 
 export const setConnection = (service: Service, value: Connection | null) => {

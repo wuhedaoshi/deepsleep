@@ -16,6 +16,9 @@ import javax.net.ssl.HttpsURLConnection;
 /** Fixed OpenCode transport for Android WebViews, since OpenCode does not answer CORS preflights. */
 final class OpenCodeTransport {
     static final String PATH = "api/opencode/chat";
+    static final String RESPONSES_PATH = "api/opencode/responses";
+    static final String MESSAGES_PATH = "api/opencode/messages";
+    static final String MODELS_PATH = "api/opencode/models";
     static final String NONCE = UUID.randomUUID().toString();
     private static final String ENDPOINT = "https://opencode.ai/inference/openai/v1/chat/completions";
     private static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -34,21 +37,26 @@ final class OpenCodeTransport {
         }
         String host = "127.0.0.1:" + port;
         String supplied = headers.getOrDefault("x-deepsleep-opencode", "");
-        if (!lines[0].equals("POST /" + PATH + " HTTP/1.1")
+        boolean models = lines[0].equals("GET /" + MODELS_PATH + " HTTP/1.1");
+        boolean responses = lines[0].equals("POST /" + RESPONSES_PATH + " HTTP/1.1");
+        boolean messages = lines[0].equals("POST /" + MESSAGES_PATH + " HTTP/1.1");
+        String origin = headers.get("origin");
+        if ((!models && !responses && !messages && !lines[0].equals("POST /" + PATH + " HTTP/1.1"))
                 || !host.equals(headers.get("host"))
-                || !("http://" + host).equals(headers.get("origin"))
+                || ((!models || origin != null) && !("http://" + host).equals(origin))
                 || !MessageDigest.isEqual(NONCE.getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8))) {
             respond(output, 403, "application/json");
             return;
         }
         int length;
         try {
-            length = Integer.parseInt(headers.getOrDefault("content-length", ""));
+            length = Integer.parseInt(headers.getOrDefault("content-length", models ? "0" : ""));
         } catch (NumberFormatException invalid) {
             respond(output, 411, "application/json");
             return;
         }
-        if (length <= 0 || length > MAX_BODY_BYTES || headers.containsKey("transfer-encoding")) {
+        if ((models ? length != 0 : length <= 0 || length > MAX_BODY_BYTES)
+                || headers.containsKey("transfer-encoding")) {
             respond(output, 413, "application/json");
             return;
         }
@@ -58,25 +66,32 @@ final class OpenCodeTransport {
             return;
         }
 
-        HttpsURLConnection upstream = (HttpsURLConnection) new URL(ENDPOINT).openConnection();
+        HttpsURLConnection upstream = (HttpsURLConnection) new URL(models ? "https://opencode.ai/console/api/v1/models"
+                : responses ? "https://opencode.ai/inference/openai/v1/responses"
+                : messages ? "https://opencode.ai/inference/anthropic/v1/messages" : ENDPOINT).openConnection();
         upstream.setInstanceFollowRedirects(false);
         upstream.setConnectTimeout(20_000);
         upstream.setReadTimeout(65_000);
-        upstream.setRequestMethod("POST");
-        upstream.setRequestProperty("Content-Type", "application/json");
-        upstream.setRequestProperty("Accept", "text/event-stream");
+        upstream.setRequestMethod(models ? "GET" : "POST");
+        upstream.setRequestProperty("Accept", models ? "application/json" : "text/event-stream");
+        if (!models) {
+            upstream.setRequestProperty("Content-Type", "application/json");
+            upstream.setDoOutput(true);
+            upstream.setFixedLengthStreamingMode(length);
+        }
         upstream.setRequestProperty("Authorization", authorization);
-        upstream.setDoOutput(true);
-        upstream.setFixedLengthStreamingMode(length);
+        if (messages) upstream.setRequestProperty("anthropic-version", "2023-06-01");
         try {
             byte[] buffer = new byte[8192];
-            try (OutputStream body = upstream.getOutputStream()) {
-                int remaining = length;
-                while (remaining > 0) {
-                    int read = input.read(buffer, 0, Math.min(remaining, buffer.length));
-                    if (read < 0) throw new IOException("Incomplete request body");
-                    body.write(buffer, 0, read);
-                    remaining -= read;
+            if (!models) {
+                try (OutputStream body = upstream.getOutputStream()) {
+                    int remaining = length;
+                    while (remaining > 0) {
+                        int read = input.read(buffer, 0, Math.min(remaining, buffer.length));
+                        if (read < 0) throw new IOException("Incomplete request body");
+                        body.write(buffer, 0, read);
+                        remaining -= read;
+                    }
                 }
             }
             int status = upstream.getResponseCode();

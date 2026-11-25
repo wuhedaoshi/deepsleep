@@ -105,11 +105,12 @@ export const useEdgeSwipe = (enabled: boolean) => {
         return
       }
       const touch = event.touches[0]
-      if (!open) {
-        const target = event.target as HTMLElement | null
-        if (target?.closest?.('[data-no-swipe]') || inScrollableX(event.target)) {
-          return
-        }
+      const target = event.target
+      if (target instanceof Element && target.closest('[role="dialog"], [data-no-swipe]')) {
+        return
+      }
+      if (!open && inScrollableX(target)) {
+        return
       }
       tracking = true
       dragging = false

@@ -397,3 +397,76 @@ assert.equal(connectionFor(useSettings.getState(), 'chat'), undefined)
 console.log(
   'PASS standard-mode providers, native OpenCode route, isolated keys, web lookup, voice, and reset'
 )
+
+const { streamCompatibleChat } = await import('../src/services/api/compatibleChat.ts')
+const { fetchProviderModels } = await import('../src/services/api/modelCatalog.ts')
+const signal = new AbortController().signal
+const connection = { provider: 'opencode', base: 'https://opencode.ai/inference/openai/v1', key: 'mock-open', model: 'gpt-example', effort: 'high' }
+const requestBody = { max_tokens: 4096, system: 'System message', model: 'deepseek-flash', messages: [{role:'user',content:'Hello'}] }
+const sse = (frames) => new Response(frames.map((frame) => 'data: ' + JSON.stringify(frame) + '\n\n').join(''), {
+  headers: { 'content-type': 'text/event-stream' },
+})
+globalThis.fetch = async (url, init) => {
+  if (url === '/api/opencode/models') {
+    return Response.json({opencode:{models:{
+      sample: {id:'gpt-example',api:{responses:{}},capabilities:{reasoning:{effort:['low','high']}}},
+      claude: {id:'claude-example',api:{messages:{}}},
+      free: {id:'example-free',api:{'chat-completions':{}}},
+      gemini: {id:'gemini-example',api:{'generate-content':{}}},
+    }}})
+  }
+  const body = JSON.parse(init.body)
+  if (url === '/api/opencode/responses') {
+    assert.deepEqual(body.reasoning, { effort: 'high' })
+    assert.equal(body.max_output_tokens, 4096)
+    assert.equal(body.input.at(-1).content, 'Hello')
+    assert.equal(body.messages, undefined)
+    return sse([
+      {type:'response.created',response:{id:'r-1'}},
+      {type:'response.output_text.delta',delta:'Responses works'},
+      {type:'response.completed',response:{usage:{input_tokens:25,output_tokens:5,input_tokens_details:{cached_tokens:5}}}},
+    ])
+  }
+  if (url === '/api/opencode/messages') {
+    assert.equal(body.system, 'System message')
+    assert.equal(body.max_tokens, 4096)
+    assert.equal(body.messages.length, 1)
+    assert.equal(body.reasoning, undefined)
+    return sse([
+      {type:'message_start',message:{id:'m-1',model:'claude-example',usage:{input_tokens:10,output_tokens:0}}},
+      {type:'content_block_start',index:0,content_block:{type:'text',text:'Messages works'}},
+      {type:'content_block_stop',index:0},
+      {type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:6}},
+      {type:'message_stop'},
+    ])
+  }
+  if (url === '/api/opencode/chat') {
+    assert.deepEqual(body.stream_options,{include_usage:true})
+    assert.equal(body.max_tokens, 4096)
+    return sse([
+      {id:'chat-1',choices:[{delta:{content:'Chat Completions works'},finish_reason:'stop'}]},
+      {choices:[],usage:{prompt_tokens:30,completion_tokens:7}},
+    ])
+  }
+  assert.equal(url, 'https://api.siliconflow.cn/v1/chat/completions')
+  assert.equal(body.reasoning_effort,'max')
+  assert.equal(body.max_tokens, undefined)
+  assert.equal(body.enable_thinking,true)
+  return sse([{choices:[{delta:{content:'SiliconFlow works'},finish_reason:'stop'}]}])
+}
+const catalog = await fetchProviderModels('opencode','mock-open',signal)
+assert.deepEqual(catalog.models,['claude-example','gpt-example'])
+assert.deepEqual(catalog.routes['gpt-example'],{protocol:'responses',efforts:['low','high']})
+for (const [route, expected, output] of [
+  [connection, 'Responses works', 5],
+  [{...connection, model:'claude-example', protocol:'messages'}, 'Messages works', 6],
+  [{...connection, model:'chat-example', protocol:'chat-completions'}, 'Chat Completions works',7],
+  [{...connection, provider:'siliconflow', base:'https://api.siliconflow.cn/v1', model:'deepseek-ai/DeepSeek-V4-Flash', effort:'max'},'SiliconFlow works',undefined],
+]) {
+  const events=[]
+  for await (const event of streamCompatibleChat(route, requestBody, signal)) events.push(event)
+  assert.ok(JSON.stringify(events).includes(expected))
+  assert.equal(events.find((event) => event.type === 'message_delta')?.usage?.output_tokens,output)
+  assert.equal(events.at(-1).type,'message_stop')
+}
+console.log('PASS OpenCode catalog and three protocol routes, final usage, and SiliconFlow effort')

@@ -13,7 +13,7 @@
  */
 import { streamMessage } from '../api/client.js'
 import { streamCompatibleChat } from '../api/compatibleChat.js'
-import type { Connection } from '../api/connections.js'
+import { openCodeProtocol, type Connection } from '../api/connections.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
   type ApiMode,
@@ -56,12 +56,6 @@ export type CompactionPolicy = {
 }
 
 /**
- * 默认政策。比例与余量照抄 DSH；窗口与输出预留是猜的（文档 §八）：
- * 接口只用来校验 Key，返回体没解析，两个模型的真实窗口与默认输出上限都查不到。
- * W = 1M 时 min() 的比例支（800,000）恒小于绝对支（901,696），所以 O 猜错不影响触发点。
- */
-
-/**
  * 文本估算说「全都要保留」时，仍然保留的最近轮次数。
  *
  * 为什么需要它：触发判定用真实 usage，而「能压多少」用字符估算。图片/附件占大头的会话里
@@ -73,7 +67,7 @@ const FALLBACK_KEEP_ROUNDS = 2
 const ATTACHMENT_FLOOR_TOKENS = 1024
 
 export const COMPACTION_POLICY: CompactionPolicy = {
-  window: 1_000_000,
+  window: 1_048_576,
   outputReserve: 32_768,
   headroom: 65_536,
   thresholdRatio: 0.8,
@@ -82,18 +76,36 @@ export const COMPACTION_POLICY: CompactionPolicy = {
 
 /** 模型默认窗口；判定、摘要保留预算与仪表必须共用同一来源。 */
 export const MODEL_CONTEXT_WINDOWS: Record<ChatModel, number> = {
-  'deepseek-flash': 1_000_000,
-  'deepseek-v4-pro': 1_000_000,
+  'deepseek-flash': 1_048_576,
+  'deepseek-v4-pro': 1_048_576,
 }
 
 export const contextWindowFor = (model: ChatModel): number => MODEL_CONTEXT_WINDOWS[model]
 
-export const resolveWindow = (model: ChatModel, override: number | null, external = false): number =>
-  override !== null &&
-  Number.isFinite(override) &&
-  override > COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
-    ? override
-    : external ? 128_000 : contextWindowFor(model)
+export const resolveWindow = (model: ChatModel, override: number | null, connection?: Connection): number => {
+  const known = connection ? connection.contextWindow : contextWindowFor(model)
+  if (override !== null && Number.isFinite(override) &&
+      override > COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom) {
+    return known ? Math.min(known, override) : override
+  }
+  return known ?? 128_000
+}
+
+export const outputCapFor = (window: number, connection?: Connection): number | undefined => {
+  if (connection && connection.provider !== 'opencode') {
+    return undefined
+  }
+  const protocol = connection && (connection.protocol ?? openCodeProtocol(connection.model))
+  const standardCap = protocol === 'messages' ? 4096 : COMPACTION_POLICY.outputReserve
+  return Math.max(1, Math.min(standardCap, connection?.maxOutput ?? standardCap, Math.floor(window / 4)))
+}
+
+export const policyFor = (window: number, outputCap?: number): CompactionPolicy => ({
+  ...COMPACTION_POLICY,
+  window,
+  outputReserve: outputCap ?? Math.min(COMPACTION_POLICY.outputReserve, Math.floor(window / 4)),
+  headroom: Math.min(COMPACTION_POLICY.headroom, Math.floor(window / 4)),
+})
 
 /** 压力口径与 ContextMeter 一致：message_delta 里这四个数是整轮累计值。 */
 export const getPressureTokens = (usage: MessageUsage | undefined): number =>
@@ -157,19 +169,26 @@ export const evaluateCompaction = (
   rounds: Round[],
   compaction: SessionCompaction | undefined,
   window: number,
-  policy: CompactionPolicy = COMPACTION_POLICY
+  policy: CompactionPolicy = COMPACTION_POLICY,
+  incomingTokens = 0,
+  useUsage = true,
+  envelopeTokens?: number
 ): CompactionEvaluation => {
   const last = rounds.at(-1)
   const context = getCompactionContext(rounds, compaction)
   const usagePressure = getPressureTokens(last?.[1].usage)
-  const source = Number.isFinite(usagePressure) && usagePressure > 0 ? 'usage' : 'estimate'
-  const pressure = source === 'usage'
-    ? usagePressure
-    : estimateRoundsTokens(context.rounds) +
-      (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary)))
+  const checkpointAfterUsage = context.previous && last && (
+    context.previous.lastRoundId ? context.previous.lastRoundId === last[1].id
+      : last[1].createdAt <= context.previous.createdAt
+  )
+  const surface = (envelopeTokens ?? 0) + estimateRoundsTokens(context.rounds) +
+    (context.previous === undefined ? 0 : estimateTextTokens(frameCheckpoint(context.previous.summary)))
+  const source = useUsage && !checkpointAfterUsage && Number.isFinite(usagePressure) &&
+    usagePressure > 0 && (envelopeTokens === undefined || usagePressure >= surface) ? 'usage' : 'estimate'
+  const pressure = (source === 'usage' ? usagePressure : surface) + incomingTokens
   const result = { pressure, threshold: getThresholdTokens(window, policy), source } as const
   const previous = context.previous
-  if (last !== undefined && previous !== undefined && (
+  if (incomingTokens === 0 && last !== undefined && previous !== undefined && (
     previous.lastRoundId === undefined
       ? last[1].createdAt <= previous.createdAt
       : last[1].id === previous.lastRoundId
@@ -186,6 +205,38 @@ export const evaluateCompaction = (
     return { ...result, triggered: false, reason: 'below-threshold' }
   }
   return { ...result, triggered: true, reason: 'above-threshold' }
+}
+
+/** Measure the request using the same history and route checks in the composer and sender. */
+export const evaluateRequestContext = (
+  rounds: Round[],
+  compaction: SessionCompaction | undefined,
+  policy: CompactionPolicy,
+  route: {
+    model: ChatModel
+    apiMode?: ApiMode
+    system: string
+    thinking: boolean
+    search: boolean
+    effort?: ThinkingEffort
+    safetyLevel?: SafetyLevel
+    connection?: Connection
+  },
+  question: string,
+  reminder?: string
+): CompactionEvaluation => {
+  const previous = rounds.at(-1)?.[1]
+  const saved = previous?.requestPreferences
+  const sameRoute = previous?.model === route.model &&
+    saved?.apiMode === route.apiMode && saved?.system === route.system &&
+    previous?.thinking === route.thinking && previous?.search === route.search &&
+    saved?.effort === route.effort && saved?.safetyLevel === route.safetyLevel &&
+    saved?.externalModel === route.connection?.model &&
+    saved?.externalProvider === (route.connection?.profileId ?? route.connection?.provider)
+  return evaluateCompaction(
+    rounds, compaction, policy.window, policy, estimateTextTokens(question), sameRoute,
+    estimateTextTokens(route.system) + estimateTextTokens(reminder ?? '')
+  )
 }
 
 // ---------- token 估算 ----------
@@ -473,7 +524,7 @@ export const compactSession = async (
   }
   const context = getCompactionContext(getContextRounds(getVisibleMessages(session)), session.compaction)
   const rounds = context.rounds
-  const range = selectCompactionRange(
+  let range = selectCompactionRange(
     rounds,
     options.urgent === true ? 0 : getRetainTokens(policy.window, policy)
   )
@@ -481,7 +532,7 @@ export const compactSession = async (
     throw new CompactionError('empty-range', '没有可安全压缩的轮次')
   }
   const lastReply = rounds.at(-1)?.[1]
-  const request = buildCompactionRequest(range, {
+  const requestOptions = {
     model: options.envelope?.model ?? lastReply?.model ?? DEFAULT_MODEL,
     system: options.envelope?.system ?? lastReply?.requestPreferences?.system,
     effort: options.envelope?.effort ?? lastReply?.requestPreferences?.effort,
@@ -490,22 +541,29 @@ export const compactSession = async (
     thinking: options.envelope?.thinking ?? lastReply?.thinking ?? false,
     search: options.envelope?.search ?? lastReply?.search ?? false,
     previous: context.previous,
-  })
+  }
   const stop = signal ?? new AbortController().signal
   let summary: string
-  try {
-    summary = await collectSummary(apiKey, request, stop, connection)
-  } catch (error) {
-    if (stop.aborted) {
-      throw error
+  for (let retry = 0; ; retry += 1) {
+    try {
+      const cap = outputCapFor(policy.window, connection)
+      const body = buildCompactionRequest(range, requestOptions)
+      summary = await collectSummary(apiKey, cap ? { ...body, max_tokens: Math.min(cap, 8192) } : body, stop, connection)
+      break
+    } catch (error) {
+      if (stop.aborted) {
+        throw error
+      }
+      // Preserve every uncompressed turn. If the summarizer itself overflows, shorten its prefix.
+      if (retry < 3 && range.rounds.length > 1 && isContextOverflowError(error)) {
+        const shorter = range.rounds.slice(0, Math.ceil(range.rounds.length / 2))
+        range = { rounds: shorter, upToMessageId: shorter[shorter.length - 1][1].id }
+        continue
+      }
+      throw error instanceof CompactionError
+        ? error
+        : new CompactionError('request', error instanceof Error ? error.message : String(error), error)
     }
-    throw error instanceof CompactionError
-      ? error
-      : new CompactionError(
-          'request',
-          error instanceof Error ? error.message : String(error),
-          error
-        )
   }
   // 字符估算只看得到文本。图文会话里被替换的「原文」几乎全是图片（服务端定价的 token），
   // 用它判断「没变小」会把一份合格的摘要当成失败——这正是「压缩没用」的又一来源。
@@ -543,6 +601,23 @@ const OVERFLOW_PATTERNS = [
   /上下文.{0,8}(长度|超|上限)/,
   /超出.{0,8}(上下文|窗口)/,
 ]
+
+export const readContextOverflow = (error: unknown) => {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  const windowMatch = /(?:maximum context length is|context window(?: size)?(?: is| of)?)\s+([\d,]+)\s*tokens/i.exec(message)
+  const usageMatch = /requested (?:a total of )?([\d,]+) tokens(?: \(([\d,]+) in the messages, ([\d,]+) in the completion\)|:\s*([\d,]+) tokens from the input messages and ([\d,]+) tokens for the completion)/i.exec(message)
+  if (!windowMatch || !usageMatch) {
+    return undefined
+  }
+  const count = (value: string) => Number(value.replace(/,/g, ''))
+  const window = count(windowMatch[1])
+  const total = count(usageMatch[1])
+  const input = count(usageMatch[2] ?? usageMatch[4])
+  const output = count(usageMatch[3] ?? usageMatch[5])
+  return [window, total, input, output].every(Number.isSafeInteger) &&
+    window > 0 && input >= 0 && output >= 0 && total === input + output && total > window
+    ? { window, input, output } : undefined
+}
 
 export const isContextOverflowError = (error: unknown): boolean => {
   const message =

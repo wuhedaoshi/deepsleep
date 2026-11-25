@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import { connectionFor } from '../api/connections.js'
+import { connectionFor, openCodeProtocol } from '../api/connections.js'
 import { streamCompatibleChat } from '../api/compatibleChat.js'
 import { appendWebContext, retrieveWeb } from '../api/clientWeb.js'
 import { DEFAULT_SYSTEM_PROMPT, type ApiMode } from '../api/types.js'
@@ -29,8 +29,11 @@ import {
   compactSession,
   CompactionError,
   DEFAULT_MODEL,
-  evaluateCompaction,
+  evaluateRequestContext,
   isContextOverflowError,
+  outputCapFor,
+  policyFor,
+  readContextOverflow,
   resolveWindow,
   serverTools,
 } from './compaction.js'
@@ -305,11 +308,11 @@ const createReply = (modeOverride?: ApiMode): AssistantMessage & {
     thinking,
     requestPreferences: {
       apiMode,
-      ...(connection ? { externalModel: connection.model } : {}),
+      ...(connection ? { externalModel: connection.model, externalProvider: connection.profileId ?? connection.provider } : {}),
       system: connection && !settings.activePromptId ? 'You are a helpful assistant.' : selectedSystemPrompt(settings),
       effort: thinkingEffort,
       safetyLevel,
-      window: resolveWindow(model, contextWindowOverride, Boolean(connection)),
+      window: resolveWindow(model, contextWindowOverride, connection),
     },
     search,
     prefix: true,
@@ -710,17 +713,19 @@ export const compactNow = async (sessionId: string): Promise<ManualCompactionOut
   set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
   try {
     const settings = useSettings.getState()
+    const connection = connectionFor(settings, 'chat')
+    const window = resolveWindow(settings.model, settings.contextWindowOverride, connection)
     const result = await compactSession(session, settings.apiKey ?? '', undefined, {
       envelope: {
         model: settings.model,
         apiMode: settings.apiMode,
-        connection: connectionFor(settings, 'chat'),
-        system: connectionFor(settings, 'chat') && !settings.activePromptId ? 'You are a helpful assistant.' : selectedSystemPrompt(settings),
+        connection,
+        system: connection && !settings.activePromptId ? 'You are a helpful assistant.' : selectedSystemPrompt(settings),
         thinking: settings.thinking,
         search: settings.search,
         effort: settings.thinkingEffort,
         safetyLevel: settings.safetyLevel,
-        policy: { window: resolveWindow(settings.model, settings.contextWindowOverride, Boolean(connectionFor(settings, 'chat'))) },
+        policy: policyFor(window, outputCapFor(window, connection)),
       },
     })
     updateSession(sessionId, (current) => ({
@@ -1336,6 +1341,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   // 溢出恢复只试一次：DSH 的 maxOverflowRetries 默认 1，反复压缩没意义。
   const model = initial.model ?? DEFAULT_MODEL
   const preferences = initial.requestPreferences
+  let window = resolveWindow(model, preferences?.window ?? settings.contextWindowOverride, connection)
+  let outputCap = outputCapFor(window, connection)
+  let loweredOutput = false
   const envelope = {
     model,
     apiMode: preferences?.apiMode,
@@ -1345,7 +1353,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     search: initial.search ?? false,
     effort: preferences?.effort,
     safetyLevel: preferences?.safetyLevel ?? 'high' as const,
-    policy: { window: preferences?.window ?? resolveWindow(model, settings.contextWindowOverride, Boolean(connection)) },
+    policy: policyFor(window, outputCap),
   }
   let clientWeb = initial.clientWeb
   let compactedForOverflow = false
@@ -1369,17 +1377,19 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         updateReply(sessionId, reply)
         persist(sessionId)
         if (!extended && envelope.search && !clientWeb && !request.prefix) {
-          clientWeb = await retrieveWeb(apiKey, prepared.question.content, controller.signal, settings.apiMode === 'standard' ? settings.connections : undefined)
+          clientWeb = await retrieveWeb(apiKey, prepared.question.content, controller.signal, { search: connectionFor(settings, 'search'), fetch: connectionFor(settings, 'fetch') })
           reply = { ...reply, clientWeb }
           updateReply(sessionId, reply)
         }
         let compaction = getSession(sessionId)?.compaction
         // 发送前的自动压缩（DSH 官方机制）：压力逼近窗口上限时，先把较早的历史摘要成一条
         // checkpoint，只保留近期逐字上下文。失败不阻塞发送——退回整段发。
-        const window = envelope.policy.window
-        const evaluation = evaluateCompaction(getContextRounds(prepared.history), compaction, window)
+        const outgoingQuestion = appendWebContext(prepared.question.content, envelope.search ? clientWeb : undefined)
+        const evaluation = evaluateRequestContext(
+          getContextRounds(prepared.history), compaction, envelope.policy, envelope, outgoingQuestion, latestReminder
+        )
         logInfo('compaction', '自动压缩判定', evaluation)
-        if (evaluation.triggered) {
+        if (evaluation.triggered && !compactedForOverflow && !loweredOutput) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             set((state) => ({ compacting: { ...state.compacting, [sessionId]: true } }))
@@ -1410,12 +1420,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             }
           }
         }
-        logInfo('chat', '发起请求', { model, rounds: getContextRounds(prepared.history).length, compaction: compaction !== undefined })
+        logInfo('chat', '发起请求', { provider: connection?.provider ?? 'deepseek', model: connection?.model ?? model, rounds: getContextRounds(prepared.history).length, compaction: compaction !== undefined })
         const messages = toRequestMessages(
           prepared.history,
           {
             ...prepared.question,
-            content: appendWebContext(prepared.question.content, envelope.search ? clientWeb : undefined),
+            content: outgoingQuestion,
           },
           prepared.prefix,
           initial.thinking ?? false,
@@ -1426,6 +1436,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         )
         const body = {
             model,
+            ...(outputCap ? { max_tokens: outputCap } : {}),
             system: envelope.system,
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
@@ -1507,7 +1518,28 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           getDraft(sessionId).text === '' && getDraft(sessionId).attachments.length === 0) {
           setDraftText(sessionId, request.question.content)
         }
-        if (!messageLimit && !compactedForOverflow && isContextOverflowError(error)) {
+        const overflow = !messageLimit && isContextOverflowError(error)
+        const measured = overflow && error instanceof ApiError &&
+          (error.status === 400 || error.status === 413) ? readContextOverflow(error) : undefined
+        if (measured && !receivedContent) {
+          window = Math.min(window, measured.window)
+          envelope.policy = policyFor(window, outputCap)
+          const remaining = measured.window - measured.input - 256
+          const completionIncludesReasoning = connection?.provider !== 'opencode' ||
+            (connection.protocol ?? openCodeProtocol(connection.model)) !== 'messages'
+          if (!loweredOutput && completionIncludesReasoning && outputCap === measured.output &&
+            remaining >= 2048 && remaining < measured.output) {
+            loweredOutput = true
+            outputCap = remaining
+            envelope.policy = policyFor(window, outputCap)
+            logInfo('compaction', '按服务端余量降低输出上限后重试', {
+              window: measured.window, input: measured.input, outputCap,
+            })
+            continue
+          }
+          logInfo('compaction', '服务端上下文用量', measured)
+        }
+        if (overflow && !receivedContent && !compactedForOverflow) {
           const session = getSession(sessionId)
           if (session !== undefined) {
             compactedForOverflow = true
@@ -1567,6 +1599,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             localMessage:
               messageLimit
                 ? { key: 'replySingleMessageLimit', params: messageLimit }
+                : overflow
+                ? { key: 'replyContextOverflow' }
                 : getFileErrorCode(error) === 'unsupportedImage'
                 ? { key: 'apiImageUnsupported' }
                 : error.localMessage,

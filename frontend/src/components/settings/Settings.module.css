@@ -3,7 +3,16 @@
   width: 760px;
   height: 500px;
   max-height: calc(100vh - 32px);
-  padding: 19px 24px 22px;
+  padding: 19px 24px 0;
+  overflow: hidden;
+  isolation: isolate;
+
+  > :last-child {
+    flex-shrink: 0;
+    margin: 0 -24px;
+    border-top: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-2);
+  }
 }
 
 .dialogMain {
@@ -49,7 +58,14 @@
     flex-shrink: 0;
   }
 
-  &:hover,
+  -webkit-tap-highlight-color: transparent;
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      background-color: var(--dsw-alias-interactive-bg-hover);
+    }
+  }
+
   &.navItemActive {
     background-color: var(--dsw-alias-interactive-bg-hover);
   }
@@ -67,7 +83,9 @@
   min-height: 0;
   margin-right: -24px;
   padding: 0 24px;
-  overflow-y: auto;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
 }
 
 .cell {
@@ -217,7 +235,14 @@
   outline: none;
   transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
 
-  &:hover,
+  -webkit-tap-highlight-color: transparent;
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      background-color: var(--dsw-specific-selector);
+    }
+  }
+
   &.themeOptionSelected {
     background-color: var(--dsw-specific-selector);
   }
@@ -267,7 +292,7 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  color: var(--dsw-alias-label-caption);
+  color: var(--dsw-alias-label-secondary);
   user-select: none;
 }
 
@@ -295,7 +320,7 @@
     caret-color: var(--dsw-alias-brand-text);
 
     &::placeholder {
-      color: var(--dsw-alias-label-caption);
+      color: var(--dsw-alias-label-secondary);
     }
   }
 }
@@ -318,7 +343,7 @@
   cursor: pointer;
 
   &:disabled {
-    color: var(--dsw-alias-label-caption);
+    color: var(--dsw-alias-label-secondary);
     cursor: default;
   }
 }
@@ -331,25 +356,26 @@
     height: calc(100% - 64px);
     max-height: 800px;
     border-radius: 24px 24px 0 0;
-    /* 标题、分组栏和内容共用滚动容器，从顶部起手也能带动内容。 */
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
+    overflow: hidden;
   }
 
   .dialogMain {
-    /* 让分组栏的吸顶范围包含整个弹窗，也覆盖末尾版本行。 */
-    display: contents;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .navigation {
-    position: sticky;
-    top: 0;
-    z-index: 1;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    flex-shrink: 0;
     flex-direction: row;
     width: auto;
-    margin: 0 -8px;
+    margin: 0;
     padding: 6px 4px 8px;
-    overflow-x: auto;
+    overflow: auto hidden;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
     scrollbar-width: none;
     background: var(--dsw-alias-bg-layer-2);
     box-shadow: inset 0 -1px var(--dsw-alias-border-l2-darkmode-thin);
@@ -360,7 +386,11 @@
   }
 
   .navItem {
-    flex: 1 0 max-content;
+    flex: 1 0 auto;
+    gap: 5px;
+    min-height: 44px;
+    padding-inline: 7px;
+    font-size: 13px;
     justify-content: center;
     width: auto;
     min-width: 0;
@@ -377,11 +407,9 @@
   }
 
   .content {
-    flex: 1 0 auto;
-    overflow: visible;
-    padding-top: 16px;
-    padding-left: 0;
-    padding-bottom: env(safe-area-inset-bottom);
+    flex: 1 1 0;
+    margin: 0;
+    padding: 8px 0 14px;
   }
 
   .text {
@@ -554,9 +582,23 @@
 
 /* 版本行：低调但可见，装在设备上能立刻确认包对不对 */
 .version {
-  padding: 8px 16px 12px;
-  color: var(--text-tertiary, #9ca3af);
+  width: 100%;
+  padding: 7px 12px calc(7px + env(safe-area-inset-bottom));
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.balanceDetails {
+  display: grid;
+  gap: 3px;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+
+  strong {
+    color: var(--dsw-alias-label-primary);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
 }

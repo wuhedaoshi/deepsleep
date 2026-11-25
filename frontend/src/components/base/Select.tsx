@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useAnchoredPosition, useDismiss } from './anchored.js'
 import { IconCheckOutline16, IconChevronDownOutline14 } from './icons.js'
@@ -37,6 +37,25 @@ export const Select = <T extends string>({
   >(open, { align: 'end', maxHeight: 320, minSpace: 160 })
   // Esc 只关菜单，不让外层弹窗一起关闭
   useDismiss(open, [anchorRef, floatingRef], () => setOpen(false), { captureEscape: true })
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+    const closeOnContainerScroll = (event: Event) => {
+      const anchor = anchorRef.current
+      const container = event.target
+      if (!(container instanceof Element) || !anchor || !container.contains(anchor)) {
+        return
+      }
+      const bounds = container.getBoundingClientRect()
+      const trigger = anchor.getBoundingClientRect()
+      if (trigger.bottom <= bounds.top || trigger.top >= bounds.bottom) {
+        setOpen(false)
+      }
+    }
+    window.addEventListener('scroll', closeOnContainerScroll, true)
+    return () => window.removeEventListener('scroll', closeOnContainerScroll, true)
+  }, [anchorRef, open])
 
   return (
     <>

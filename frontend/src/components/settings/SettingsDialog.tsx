@@ -1,5 +1,6 @@
+import { connectionFor } from '../../services/api/connections.js'
 import clsx from 'clsx'
-import { ProviderSettings } from './ProviderSettings.js'
+import { presetProviderNames, ProviderSettings } from './ProviderSettings.js'
 import { createId } from '../../utils/id.js'
 import type { ThinkingEffort } from '../../services/api/types.js'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -22,7 +23,7 @@ import {
 } from '../../services/chat/backup.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
-import { fetchBalance, formatBalance } from '../../services/api/balance.js'
+import { fetchBalance, formatBalance, type Balance } from '../../services/api/balance.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
 import {
   isChineseBrowser,
@@ -91,6 +92,8 @@ const SettingsContent = () => {
         closable
         className={styles.dialog}
         mainClassName={styles.dialogMain}
+        ignoreButtonLongPress
+        footer={<div className={styles.version}>{appVersionLine()}</div>}
         onClose={() => {
           if (!historyDelete.busy) {
             closeSettings()
@@ -165,8 +168,6 @@ const SettingsContent = () => {
             </>
           )}
         </div>
-        {/* 版本行：安装后能直接确认是不是新包——之前没有这行，只能去系统设置里翻，很容易看成「版本没变」 */}
-        <div className={styles.version}>{appVersionLine()}</div>
       </Modal>
       {historyImport.file ? <ImportConfirm historyImport={historyImport} /> : null}
       {logOpen ? <LogPanel onClose={() => setLogOpen(false)} /> : null}
@@ -351,7 +352,7 @@ const ContextWindowSetting = () => {
   })
   const [value, setValue] = useState(override === null ? '' : String(override))
   const minimum = COMPACTION_POLICY.outputReserve + COMPACTION_POLICY.headroom
-  const external = useSettings((state) => state.apiMode === 'standard' && Boolean(state.connections.chat))
+  const external = useSettings((state) => connectionFor(state, 'chat'))
   const window = resolveWindow(model, null, external)
   const parsed = parseContextWindowInput(value)
   const invalid =
@@ -770,7 +771,7 @@ const SettingCell = ({
   className,
 }: {
   label: string
-  description?: string
+  description?: ReactNode
   status: Status
   action: ReactNode
   className?: string
@@ -879,53 +880,73 @@ const ImportProgressBar = ({ progress }: { progress: ImportProgress }) => {
 const BalanceSetting = () => {
   const t = useTranslate()
   const apiKey = useSettings((state) => state.apiKey)
+  const providerName = useSettings((state) => {
+    const connection = connectionFor(state, 'chat')
+    if (!connection) {
+      return null
+    }
+    return state.customProviders.find((provider) => provider.id === connection.profileId)?.name ??
+      presetProviderNames[connection.provider as keyof typeof presetProviderNames] ??
+      t('providerCustom')
+  })
   const [state, setState] = useState<
-    | { kind: 'idle' }
-    | { kind: 'loading' }
-    | { kind: 'ok'; text: string; detail: string }
-    | { kind: 'error'; text: string }
+    | { kind: 'idle' | 'loading' | 'error' }
+    | { kind: 'ok'; balance: Balance }
   >({ kind: 'idle' })
+  const activeRequest = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
+    activeRequest.current?.abort()
     if (!apiKey) {
-      setState({ kind: 'error', text: t('balanceMissingKey') })
+      setState({ kind: 'idle' })
       return
     }
+    const controller = new AbortController()
+    activeRequest.current = controller
     setState({ kind: 'loading' })
     try {
-      const balance = await fetchBalance()
-      setState({
-        kind: 'ok',
-        text: formatBalance(balance),
-        detail: `${t('balanceGranted')} ${balance.granted.toFixed(2)} · ${t('balanceToppedUp')} ${balance.toppedUp.toFixed(2)}`,
-      })
+      const balance = await fetchBalance(apiKey, controller.signal)
+      if (!controller.signal.aborted) {
+        setState({ kind: 'ok', balance })
+      }
     } catch {
-      setState({ kind: 'error', text: t('balanceFailed') })
+      if (!controller.signal.aborted) {
+        setState({ kind: 'error' })
+      }
     }
-  }, [apiKey, t])
+  }, [apiKey])
 
   useEffect(() => {
     void load()
+    return () => activeRequest.current?.abort()
   }, [load])
 
   return (
     <SettingCell
       label={t('balance')}
       description={
-        state.kind === 'ok'
-          ? `${state.text} · ${state.detail}`
-          : state.kind === 'error'
-            ? state.text
-            : t('balanceDescription')
+        <div className={styles.balanceDetails}>
+          <div>{t('balanceDescription')}</div>
+          <div role="status">
+            {!apiKey
+              ? t('balanceMissingKey')
+              : state.kind === 'ok'
+                ? <>
+                    <strong>{formatBalance(state.balance)}</strong>
+                    {' · '}{t('balanceGranted')} {state.balance.granted.toFixed(2)}
+                    {' · '}{t('balanceToppedUp')} {state.balance.toppedUp.toFixed(2)}
+                  </>
+                : state.kind === 'error'
+                  ? t('balanceFailed')
+                  : t('balanceLoading')}
+          </div>
+          {providerName && <div>{t('balanceExternalProvider', { provider: providerName })}</div>}
+        </div>
       }
       status={null}
       action={
-        <Button
-          variant="outlined"
-          size="m"
-          className={styles.cellButton}
-          onClick={() => void load()}
-        >
+        <Button variant="outlined" size="m" className={styles.cellButton}
+          disabled={!apiKey || state.kind === 'loading'} onClick={() => void load()}>
           {t('balanceRefresh')}
         </Button>
       }

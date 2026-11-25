@@ -177,6 +177,7 @@ export type DeepseekReadUrlTool = {
 }
 
 export type CreateMessageRequest = {
+  max_tokens?: number
   model: ChatModel
   system: string
   messages: MessageParam[]

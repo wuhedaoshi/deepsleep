@@ -17,6 +17,7 @@ export const Modal = ({
   closable = false,
   className,
   mainClassName,
+  ignoreButtonLongPress = false,
   onClose,
 }: {
   title: ReactNode
@@ -27,10 +28,12 @@ export const Modal = ({
   className?: string
   /** 内容区的 class */
   mainClassName?: string
+  ignoreButtonLongPress?: boolean
   onClose: () => void
 }) => {
   const t = useTranslate()
   const titleId = useId()
+  const heldButton = useRef<{ button: HTMLButtonElement; start: number } | null>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
   useEffect(() => {
@@ -58,6 +61,40 @@ export const Modal = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        onPointerDownCapture={(event) => {
+          if (!ignoreButtonLongPress) {
+            return
+          }
+          const button = event.target instanceof Element ? event.target.closest('button') : null
+          heldButton.current =
+            event.pointerType === 'touch' && button ? { button, start: event.timeStamp } : null
+        }}
+        onPointerCancelCapture={() => {
+          heldButton.current = null
+        }}
+        onContextMenu={(event) => {
+          if (
+            ignoreButtonLongPress &&
+            event.target instanceof Element &&
+            event.target.closest('button')
+          ) {
+            event.preventDefault()
+          }
+        }}
+        onClickCapture={(event) => {
+          const press = heldButton.current
+          heldButton.current = null
+          if (
+            press &&
+            event.detail > 0 &&
+            event.target instanceof Node &&
+            press.button.contains(event.target) &&
+            event.timeStamp - press.start >= 500
+          ) {
+            event.preventDefault()
+            event.stopPropagation()
+          }
+        }}
       >
         <div className={styles.header}>
           <div id={titleId} className={styles.title}>

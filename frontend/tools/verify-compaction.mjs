@@ -36,11 +36,12 @@ const threshold = getThresholdTokens(windowSize)
 assert.equal(threshold, 201_696)
 assert.equal(getThresholdTokens(1_400_000), 1_120_000)
 for (const invalid of [null, NaN, Infinity, -1, 0, 98_304]) {
-  assert.equal(resolveWindow(DEFAULT_MODEL, invalid), 1_000_000)
+  assert.equal(resolveWindow(DEFAULT_MODEL, invalid), 1_048_576)
 }
 assert.equal(resolveWindow(DEFAULT_MODEL, 98_305), 98_305)
 assert.equal(resolveWindow(DEFAULT_MODEL, windowSize), windowSize)
-assert.equal(resolveWindow(DEFAULT_MODEL, 1_400_000), 1_400_000)
+assert.equal(resolveWindow(DEFAULT_MODEL, 1400000), 1048576)
+assert.equal(resolveWindow(DEFAULT_MODEL, null, {contextWindow:64000}),64000)
 console.log('PASS 1 windows: 300000 -> 201696; 1400000 -> 1120000; invalid overrides -> default')
 
 for (const window of [windowSize, 1_400_000]) {
@@ -85,6 +86,7 @@ assert.equal(evaluateCompaction([], undefined, windowSize).reason, 'no-usage-and
 assert.equal(evaluateCompaction([long[0]], undefined, windowSize).reason, 'nothing-to-compact')
 console.log(`PASS 4 missing/all-zero usage: source=estimate, pressure=${estimated.pressure}, triggered=true`)
 
+const screenshotOverflow = "This model's maximum context length is 1048576 tokens. However, you requested 1106215 tokens (1040179 in the messages, 66036 in the completion). Please reduce the length of the messages."
 let mockMode = 'ok'
 const requests = []
 globalThis.fetch = async (_url, init) => {
@@ -97,7 +99,17 @@ globalThis.fetch = async (_url, init) => {
   }
   if (!isSummary && mockMode === 'overflow') {
     mockMode = 'ok'
-    return new Response(JSON.stringify({ error: { message: 'context window exceeded' } }), { status: 400 })
+    return new Response(JSON.stringify({ error: { message: screenshotOverflow } }), { status: 400 })
+  }
+  if (!isSummary && mockMode === 'lower-cap') {
+    mockMode = 'ok'
+    const error = "This model's maximum context length is 1048576 tokens. However, you requested 1072947 tokens (1040179 in the messages, 32768 in the completion)."
+    assert.equal(body.max_tokens, 32768)
+    return new Response(JSON.stringify({ error: { message: error } }), { status: 400 })
+  }
+  if (isSummary && mockMode === 'summary-overflow') {
+    mockMode = 'ok'
+    return new Response(JSON.stringify({ error: { message: screenshotOverflow } }), { status: 400 })
   }
   if (isSummary && mockMode === 'request') throw new Error('mock summary failure')
   const text = isSummary ? (mockMode === 'empty-summary' ? '' : '已完成前序工作，继续当前任务。') : '正常回答'
@@ -316,3 +328,36 @@ for (const { body } of requests) {
   for (const field of ['tools', 'safety_check', 'title']) assert.equal(field in body, false)
 }
 console.log('PASS API modes: per-message limit, draft restoration, explicit standard retry, and standard compaction')
+
+requests.length = 0
+mockMode = 'summary-overflow'
+const reduced = await compactSession(session('summary-overflow', long), 'mock', undefined, {
+  ...compactOptions, urgent: true,
+})
+assert.equal(requests.length, 2)
+assert(requests[1].body.messages.length < requests[0].body.messages.length)
+assert.equal(reduced.upToMessageId, 'a2')
+assert.equal(evaluateCompaction([round(1, 80000), round(2, 80000)], undefined, windowSize, COMPACTION_POLICY, 100000).triggered, true)
+console.log('PASS screenshot overflow, smaller summary retry, and current message pressure')
+
+const { readContextOverflow } = await import('../src/services/chat/compaction.ts')
+assert.deepEqual(readContextOverflow(screenshotOverflow), { window:1048576,input:1040179,output:66036 })
+assert.equal(readContextOverflow(screenshotOverflow.replace('1106215','1006215')), undefined)
+requests.length = 0
+mockMode = 'lower-cap'
+await seed('lower-cap', [round('small-history', 10)])
+await send('lower-cap')
+assert.deepEqual(requests.map(({isSummary, body}) => [isSummary, body.max_tokens]), [[false,32768],[false,8141]])
+console.log('PASS confirmed provider overflow retries once with a smaller wire output cap')
+
+const { evaluateRequestContext, policyFor } = await import('../src/services/chat/compaction.ts')
+const route = { model:DEFAULT_MODEL, apiMode:'standard', system:'system', thinking:false, search:false }
+const large = [round('old-sample', 800000), round('last-sample', 600000, 170000)]
+Object.assign(large[1][1], { model:DEFAULT_MODEL, thinking:false, search:false,
+  requestPreferences:{ apiMode:'standard', system:'system' } })
+const baseline = evaluateRequestContext(large, undefined, policyFor(1048576), route, '')
+const withDraft = evaluateRequestContext(large, undefined, policyFor(1048576), route, 'draft')
+assert.equal(baseline.source, 'estimate')
+assert(baseline.pressure > 1000000)
+assert(withDraft.pressure > baseline.pressure)
+console.log('PASS a stale 170K sample cannot mask a 1M estimated request surface')

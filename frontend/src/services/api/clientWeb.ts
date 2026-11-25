@@ -1,4 +1,5 @@
-import { API_ORIGIN, readBodyText, request } from './client.js'
+import { logError } from '../log.js'
+import { ApiError, API_ORIGIN, readBodyText, request } from './client.js'
 import { bearer, type Connection } from './connections.js'
 
 export type ClientWebSource = { title: string; url: string; excerpt: string }
@@ -82,6 +83,10 @@ export const retrieveWeb = async (
       !value ||
       (url && !tavily ? typeof value.content !== 'string' : !Array.isArray(value.results))
     ) {
+      logError('chat', '独立联网响应格式无效', {
+        service: path,
+        provider: connection?.provider ?? 'deepseek',
+      })
       return { status: 'failed' }
     }
     const rows: unknown[] =
@@ -104,6 +109,12 @@ export const retrieveWeb = async (
     if (signal.aborted) {
       throw error
     }
+    logError('chat', '独立联网请求失败', {
+      service: path,
+      provider: connection?.provider ?? 'deepseek',
+      kind: error instanceof ApiError ? error.kind : 'invalid-response',
+      status: error instanceof ApiError ? error.status : undefined,
+    })
     return { status: 'failed' }
   }
 }

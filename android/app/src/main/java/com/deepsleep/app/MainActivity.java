@@ -1387,7 +1387,8 @@ public class MainActivity extends Activity {
             if (path.startsWith("/")) path = path.substring(1);
 
             OutputStream out = s.getOutputStream();
-            if (path.equals(OpenCodeTransport.PATH)) {
+            if (path.equals(OpenCodeTransport.PATH) || path.equals(OpenCodeTransport.MODELS_PATH)
+                    || path.equals(OpenCodeTransport.RESPONSES_PATH) || path.equals(OpenCodeTransport.MESSAGES_PATH)) {
                 OpenCodeTransport.serve(head.toString(), in, out, PORT);
                 return;
             }
